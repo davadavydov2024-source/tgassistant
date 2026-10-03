@@ -1,0 +1,127 @@
+import html
+import logging
+import time
+
+from aiogram import Bot, Router
+from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
+
+from . import db, registry
+from .ctx import Ctx
+from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra  # noqa: F401  (регистрация команд)
+
+log = logging.getLogger(__name__)
+router = Router()
+
+
+async def owner_of(bot: Bot, conn_id: str) -> int:
+    row = await db.get_conn(conn_id)
+    if row:
+        return row["user_id"]
+    bc = await bot.get_business_connection(conn_id)
+    await db.save_conn(conn_id, bc.user.id, bc.user.first_name, bc.user.last_name or "")
+    return bc.user.id
+
+
+@router.business_connection()
+async def on_connection(bc: BusinessConnection, bot: Bot):
+    u = bc.user
+    await db.save_conn(bc.id, u.id, u.first_name, u.last_name or "")
+    if bc.is_enabled:
+        try:
+            await bot.send_message(
+                bc.user_chat_id,
+                "✅ <b>Бот подключён к вашему аккаунту.</b>\nПишите команды с точки в любом личном чате, например "
+                "<code>.help</code> или <code>.love</code>.\nМеню и тарифы — /start",
+            )
+        except Exception:
+            pass
+
+
+async def dispatch(ctx: Ctx, text: str):
+    parts = text[1:].split(maxsplit=1)
+    if not parts:
+        return
+    name = parts[0].lower()
+    cmd = registry.REG.get(name)
+    if not cmd:
+        return
+    ctx.args = parts[1].strip() if len(parts) > 1 else ""
+    if name != "on" and await db.get_s(ctx.owner_id, "enabled", "1") == "0":
+        return
+    if await db.get_tier(ctx.owner_id) < cmd.tier:
+        return await ctx.edit(f"🔒 Команда <code>.{name}</code> доступна на тарифе {registry.TIERS[cmd.tier]}. Оформить: /start в боте")
+    try:
+        await cmd.fn(ctx)
+    except Exception as e:
+        log.exception("команда .%s упала", name)
+        try:
+            await ctx.send(f"⚠️ <code>.{name}</code>: {html.escape(str(e)[:200])}")
+        except Exception:
+            pass
+
+
+@router.business_message()
+async def on_business_message(message: Message, bot: Bot):
+    conn_id = message.business_connection_id
+    try:
+        owner_id = await owner_of(bot, conn_id)
+    except Exception:
+        log.exception("не удалось получить подключение")
+        return
+    sender = message.from_user.id if message.from_user else 0
+    is_owner = sender == owner_id
+    chat_id = message.chat.id
+    await db.log_msg(conn_id, chat_id, message.message_id, sender)
+    await series.touch(conn_id, chat_id, is_owner, message.chat.full_name or "")
+    ctx = Ctx(bot, message, conn_id, owner_id)
+    text = message.text or message.caption or ""
+    if is_owner:
+        profile.ACTIVE[owner_id] = time.time()
+        if text.startswith(".") and len(text) > 1:
+            return await dispatch(ctx, text)
+        await games.on_move(ctx, text)
+    else:
+        if await moderation.check(ctx):
+            return
+        if await saver.enabled(owner_id):
+            await saver.remember(message, conn_id)
+        await extra.afk_reply(ctx)
+        await profile.on_incoming(ctx)
+        await games.on_move(ctx, text)
+
+
+@router.edited_business_message()
+async def on_edited(message: Message, bot: Bot):
+    conn_id = message.business_connection_id
+    try:
+        owner_id = await owner_of(bot, conn_id)
+    except Exception:
+        return
+    if (message.from_user and message.from_user.id == owner_id) or not await saver.enabled(owner_id):
+        return
+    row = await saver.get(conn_id, message.chat.id, message.message_id)
+    new_text = message.text or message.caption or ""
+    if row and (row["text"] or "") != new_text:
+        try:
+            await saver.notify_edited(bot, owner_id, row, new_text)
+        except Exception as e:
+            log.warning("notify_edited: %s", e)
+    await saver.remember(message, conn_id)
+
+
+@router.deleted_business_messages()
+async def on_deleted(event: BusinessMessagesDeleted, bot: Bot):
+    conn_id = event.business_connection_id
+    try:
+        owner_id = await owner_of(bot, conn_id)
+    except Exception:
+        return
+    if not await saver.enabled(owner_id):
+        return
+    for mid in event.message_ids:
+        row = await saver.get(conn_id, event.chat.id, mid)
+        if row and row["from_id"] != owner_id:
+            try:
+                await saver.notify_deleted(bot, owner_id, row)
+            except Exception as e:
+                log.warning("notify_deleted: %s", e)
