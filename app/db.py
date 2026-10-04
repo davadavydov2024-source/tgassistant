@@ -13,13 +13,13 @@ DISABLED: set[str] = set()  # глобально отключённые кома
 STATE = {"maint": False}  # режим техработ
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS connections(conn_id TEXT PRIMARY KEY, user_id INTEGER, first_name TEXT, last_name TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS connections(conn_id TEXT PRIMARY KEY, user_id INTEGER, first_name TEXT, last_name TEXT, ts REAL, username TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS subs(user_id INTEGER PRIMARY KEY, tier INTEGER, until REAL);
 CREATE TABLE IF NOT EXISTS settings(user_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(user_id, key));
 CREATE TABLE IF NOT EXISTS chatset(conn_id TEXT, chat_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(conn_id, chat_id, key));
 CREATE TABLE IF NOT EXISTS msgs(conn_id TEXT, chat_id INTEGER, message_id INTEGER, from_id INTEGER, ts REAL);
 CREATE TABLE IF NOT EXISTS reminders(id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER, due REAL, text TEXT);
-CREATE TABLE IF NOT EXISTS saved(conn_id TEXT, chat_id INTEGER, message_id INTEGER, from_id INTEGER, from_name TEXT, kind TEXT, text TEXT, file_id TEXT, ts REAL, PRIMARY KEY(conn_id, chat_id, message_id));
+CREATE TABLE IF NOT EXISTS saved(conn_id TEXT, chat_id INTEGER, message_id INTEGER, from_id INTEGER, from_name TEXT, kind TEXT, text TEXT, file_id TEXT, ts REAL, username TEXT DEFAULT '', hist TEXT DEFAULT '[]', PRIMARY KEY(conn_id, chat_id, message_id));
 CREATE TABLE IF NOT EXISTS mods(user_id INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS cmdstat(day TEXT, cmd TEXT, n INTEGER, PRIMARY KEY(day, cmd));
 CREATE TABLE IF NOT EXISTS promos(code TEXT PRIMARY KEY, tier INTEGER, days INTEGER, uses_left INTEGER);
@@ -34,6 +34,13 @@ async def init(path: str):
     _db = await aiosqlite.connect(path)
     _db.row_factory = aiosqlite.Row
     await _db.executescript(SCHEMA)
+    for sql in ("ALTER TABLE connections ADD COLUMN username TEXT DEFAULT ''",
+                "ALTER TABLE saved ADD COLUMN username TEXT DEFAULT ''",
+                "ALTER TABLE saved ADD COLUMN hist TEXT DEFAULT '[]'"):
+        try:  # миграция старых баз: колонка уже есть — это нормально
+            await _db.execute(sql)
+        except Exception:
+            pass
     await _db.execute("DELETE FROM msgs WHERE ts < ?", (time.time() - 30 * 86400,))
     await _db.execute("DELETE FROM saved WHERE ts < ?", (time.time() - 7 * 86400,))
     await _db.commit()
@@ -123,8 +130,15 @@ async def execute(sql, args=()):
 
 
 # ---- подключения ----
-async def save_conn(conn_id, user_id, first, last):
-    await execute("INSERT OR REPLACE INTO connections VALUES(?,?,?,?,?)", (conn_id, user_id, first or "", last or "", time.time()))
+async def save_conn(conn_id, user_id, first, last, username=""):
+    await execute(
+        "INSERT OR REPLACE INTO connections(conn_id,user_id,first_name,last_name,ts,username) VALUES(?,?,?,?,?,?)",
+        (conn_id, user_id, first or "", last or "", time.time(), username or ""),
+    )
+
+
+async def touch_username(user_id, username):
+    await execute("UPDATE connections SET username=? WHERE user_id=? AND COALESCE(username,'') != ?", (username or "", user_id, username or ""))
 
 
 async def get_conn(conn_id):

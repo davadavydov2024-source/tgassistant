@@ -2,11 +2,12 @@ import html
 import json
 import logging
 import time
+import traceback
 
 from aiogram import Bot, Router
 from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
 
-from . import config, db, registry
+from . import config, db, errlog, registry
 from .ctx import Ctx
 from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra, more  # noqa: F401  (регистрация команд)
 
@@ -19,7 +20,7 @@ async def owner_of(bot: Bot, conn_id: str) -> int:
     if row:
         return row["user_id"]
     bc = await bot.get_business_connection(conn_id)
-    await db.save_conn(conn_id, bc.user.id, bc.user.first_name, bc.user.last_name or "")
+    await db.save_conn(conn_id, bc.user.id, bc.user.first_name, bc.user.last_name or "", bc.user.username or "")
     return bc.user.id
 
 
@@ -27,7 +28,7 @@ async def owner_of(bot: Bot, conn_id: str) -> int:
 async def on_connection(bc: BusinessConnection, bot: Bot):
     u = bc.user
     first = not await db.fetchone("SELECT 1 FROM connections WHERE user_id=?", (u.id,))
-    await db.save_conn(bc.id, u.id, u.first_name, u.last_name or "")
+    await db.save_conn(bc.id, u.id, u.first_name, u.last_name or "", u.username or "")
     if not bc.is_enabled:
         return
     trial = ""
@@ -46,6 +47,8 @@ async def on_connection(bc: BusinessConnection, bot: Bot):
             bc.user_chat_id,
             "✅ <b>Бот подключён к вашему аккаунту.</b>\n"
             "Проверьте: напишите в любом личном чате <code>.ping</code>, список команд — <code>.help</code>.\n"
+            "💾 Удалённые для всех и изменённые сообщения собеседников будут приходить сюда с именем, @username, старым и новым текстом "
+            "(выключить: /stopsave). Если что-то не приходит — /diag.\n"
             "Меню и тарифы — /start." + trial,
         )
     except Exception:
@@ -61,6 +64,7 @@ async def dispatch(ctx: Ctx, text: str):
     if not cmd:
         return
     ctx.args = parts[1].strip() if len(parts) > 1 else ""
+    await db.touch_username(ctx.owner_id, (ctx.msg.from_user.username if ctx.msg.from_user else "") or "")
     if not ctx.is_staff:
         if ctx.owner_id in db.BANNED:
             return
@@ -81,6 +85,7 @@ async def dispatch(ctx: Ctx, text: str):
         await db.touch_seen(ctx.owner_id)
     except Exception as e:
         log.exception("команда .%s упала", name)
+        await errlog.report(ctx.bot, f".{name} (user {ctx.owner_id}): {type(e).__name__}: {e}\n{traceback.format_exc()[-1200:]}", key=f"cmd:{name}:{type(e).__name__}")
         try:
             await ctx.send(f"⚠️ <code>.{name}</code>: {html.escape(str(e)[:200])}")
         except Exception:
@@ -110,6 +115,7 @@ async def on_business_message(message: Message, bot: Bot):
     else:
         if await moderation.check(ctx):
             return
+        await db.set_s(owner_id, "last_in", time.time())
         if await saver.enabled(owner_id):
             await saver.remember(message, conn_id)
         await extra.afk_reply(ctx)
@@ -128,12 +134,15 @@ async def on_edited(message: Message, bot: Bot):
         return
     row = await saver.get(conn_id, message.chat.id, message.message_id)
     new_text = message.text or message.caption or ""
-    if row and (row["text"] or "") != new_text:
-        try:
+    try:
+        if row is None:
+            await saver.notify_edited_unknown(bot, owner_id, message, new_text)
+        elif (row["text"] or "") != new_text:
             await saver.notify_edited(bot, owner_id, row, new_text)
-        except Exception as e:
-            log.warning("notify_edited: %s", e)
-    await saver.remember(message, conn_id)
+        await db.del_s(owner_id, "save_err")
+    except Exception as e:
+        await saver.mark_fail(owner_id, e)
+    await saver.remember(message, conn_id, edited=True)
 
 
 @router.deleted_business_messages()
@@ -143,12 +152,17 @@ async def on_deleted(event: BusinessMessagesDeleted, bot: Bot):
         owner_id = await owner_of(bot, conn_id)
     except Exception:
         return
+    await db.set_s(owner_id, "last_del_evt", time.time())
     if not await saver.enabled(owner_id):
         return
     for mid in event.message_ids:
         row = await saver.get(conn_id, event.chat.id, mid)
-        if row and row["from_id"] != owner_id:
+        if not row:
+            await db.set_s(owner_id, "last_del_miss", time.time())
+            continue
+        if row["from_id"] != owner_id:
             try:
                 await saver.notify_deleted(bot, owner_id, row)
+                await db.del_s(owner_id, "save_err")
             except Exception as e:
-                log.warning("notify_deleted: %s", e)
+                await saver.mark_fail(owner_id, e)

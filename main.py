@@ -7,7 +7,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from app import config, db, menu, business, admin_panel, botcmds
+from aiogram.types import ErrorEvent
+
+from app import config, db, menu, business, admin_panel, botcmds, errlog
 from app.cmds import profile, utils
 
 
@@ -20,6 +22,12 @@ async def main():
     await db.init(config.DB_PATH)
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
+    async def on_error(event: ErrorEvent):
+        logging.error("Ошибка обработчика", exc_info=event.exception)
+        await errlog.report(bot, f"{type(event.exception).__name__}: {event.exception}")
+        return True
+
+    dp.errors.register(on_error)
     dp.include_router(admin_panel.router)
     dp.include_router(botcmds.router)
     dp.include_router(menu.router)

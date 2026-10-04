@@ -12,7 +12,7 @@ from aiogram.types import (
 
 from . import config, db
 from .registry import CMDS, SECTIONS, TIERS, section_text
-from .cmds import anim
+from .cmds import anim, saver
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -279,8 +279,6 @@ async def stopspam_cmd(m: Message, bot: Bot):
 
 @router.message(Command("startsave"))
 async def startsave_dm(m: Message):
-    if await db.get_tier(m.from_user.id) < 1:
-        return await m.answer("Сохранение удалённых и изменённых сообщений — на тарифе PREMIUM и выше. Тарифы: /start")
     await db.set_s(m.from_user.id, "save", "1")
     await m.answer("💾 Включено: удалённые для всех и изменённые сообщения собеседников будут приходить сюда. Выключить: /stopsave")
 
@@ -321,6 +319,11 @@ async def delmod(m: Message):
 async def mods(m: Message):
     if _admin(m):
         await m.answer("🛡 <b>Мини-админы</b>\n" + ("\n".join(f"<code>{u}</code>" for u in sorted(db.MODS)) or "пока нет"))
+
+
+@router.message(Command("diag"))
+async def diag(m: Message, bot: Bot):
+    await m.answer(await saver.diag_text(bot, m.from_user.id))
 
 
 @router.message(Command("version"))

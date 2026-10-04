@@ -76,14 +76,70 @@ def _cmd_name(raw: str):
 
 
 # ---------- тексты разделов ----------
-async def _users_text() -> str:
-    total = (await db.fetchone("SELECT COUNT(DISTINCT user_id) c FROM connections"))["c"]
-    rows = await db.fetchall(
-        "SELECT user_id, first_name, last_name, MAX(ts) ts FROM connections GROUP BY user_id ORDER BY ts DESC LIMIT 30")
-    lines = [f"👥 <b>Пользователи</b> ({total}), последние подключения:"]
-    for r in rows:
-        lines.append(f"<code>{r['user_id']}</code> {_name(r)} · {TIERS[await db.get_tier(r['user_id'])]}")
-    return "\n".join(lines) + "\n\nКарточка: <code>/user ID</code>"
+PAGE = 20
+
+
+async def _all_users():
+    return await db.fetchall(
+        "SELECT user_id, MAX(first_name) first_name, MAX(last_name) last_name, MAX(username) username "
+        "FROM connections GROUP BY user_id ORDER BY user_id")
+
+
+async def _users_page(page: int = 0):
+    rows = await _all_users()
+    pages = max(1, (len(rows) + PAGE - 1) // PAGE)
+    page = max(0, min(page, pages - 1))
+    lines = [f"👥 <b>Пользователи</b> ({len(rows)}) · стр. {page + 1}/{pages}"]
+    for i, r in enumerate(rows[page * PAGE:(page + 1) * PAGE], page * PAGE + 1):
+        uid = r["user_id"]
+        flags = ("🚫" if uid in db.BANNED else "") + ("🛡" if uid in db.MODS else "") + ("👑" if uid == config.ADMIN_ID else "")
+        un = f"@{html.escape(r['username'])}" if r["username"] else "—"
+        lines.append(f"{i}. {un} · {_name(r)} · {TIERS[await db.get_tier(uid)]} {flags}".rstrip())
+    lines.append("\n✍️ Отправьте номер (например <code>3</code>) — откроется пользователь: бан, подписка, мини-админ.")
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"u:list:{page - 1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"u:list:{page + 1}"))
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=[nav] if nav else [])
+
+
+async def _card_text(uid: int) -> str:
+    row = await db.fetchone("SELECT MAX(first_name) f, MAX(last_name) l, MAX(username) u FROM connections WHERE user_id=?", (uid,))
+    name = html.escape(f"{row['f'] or ''} {row['l'] or ''}".strip() or "—")
+    un = f"@{html.escape(row['u'])}" if row["u"] else "без username"
+    t, sub = await db.get_tier(uid), await db.get_sub(uid)
+    conns = (await db.fetchone("SELECT COUNT(*) c FROM connections WHERE user_id=?", (uid,)))["c"]
+    msgs = (await db.fetchone("SELECT COUNT(*) c FROM msgs m JOIN connections c ON c.conn_id=m.conn_id WHERE c.user_id=?", (uid,)))["c"]
+    refs = (await db.fetchone("SELECT COUNT(*) c FROM settings WHERE key='ref' AND value=?", (str(uid),)))["c"]
+    seen = await db.get_s(uid, "last_seen")
+    flags = [x for x, on in (("👑 админ", uid == config.ADMIN_ID), ("🛡 мини-админ", uid in db.MODS), ("🚫 забанен", uid in db.BANNED)) if on]
+    blocked = json.loads(await db.get_s(uid, "blocked_cmds", "[]"))
+    return (
+        f"👤 <b>{name}</b> ({un})\nID: <code>{uid}</code> {' '.join(flags)}\nТариф: {TIERS[t]}"
+        + (f" до {_fmt(sub['until'])}" if sub and sub["until"] > time.time() else "")
+        + f"\nПодключений: {conns} · сообщений в журнале: {msgs}\nПриглашено друзей: {refs}\n"
+        f"Последняя команда: {_fmt(seen) if seen else '—'}"
+        + (f"\nОтключённые команды: {', '.join('.' + c for c in blocked)}" if blocked else "")
+    )
+
+
+def _card_kb(uid: int, admin: bool) -> InlineKeyboardMarkup:
+    back = [InlineKeyboardButton(text="⬅️ К списку", callback_data="u:list:0")]
+    if not admin:
+        return InlineKeyboardMarkup(inline_keyboard=[back])
+
+    def b(text, act):
+        return InlineKeyboardButton(text=text, callback_data=f"u:{act}:{uid}")
+
+    banned, mod = uid in db.BANNED, uid in db.MODS
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [b("✅ Разбанить", "unban") if banned else b("🚫 Забанить", "ban")],
+        [b(f"🎁 PREMIUM {config.SUB_DAYS}д", "prem"), b(f"👑 VIP {config.SUB_DAYS}д", "vip")],
+        [b("🗑 Отобрать подписку", "rev")],
+        [b("❌ Снять мини-админа", "unmod") if mod else b("🛡 Дать мини-админку", "mod")],
+        back,
+    ])
 
 
 async def _top_text() -> str:
@@ -156,6 +212,10 @@ async def admin_cb(cb: CallbackQuery):
         return await cb.answer("Только для админов", show_alert=True)
     if key in ADMIN_ONLY and uid != config.ADMIN_ID:
         return await cb.answer("Только для главного админа", show_alert=True)
+    if key == "users":
+        text, kb = await _users_page(0)
+        await cb.message.answer(text, reply_markup=kb)
+        return await cb.answer()
     if key == "export":
         await _export(cb.message)
         return await cb.answer()
@@ -165,7 +225,7 @@ async def admin_cb(cb: CallbackQuery):
     elif key == "bc":
         text = "📢 <b>Рассылка</b>\nНапишите <code>/broadcast текст</code> — покажу предпросмотр и спрошу подтверждение."
     else:
-        text = {"subs": _subs_text, "stats": _stats_text, "users": _users_text, "top": _top_text, "bans": _bans_text,
+        text = {"subs": _subs_text, "stats": _stats_text, "top": _top_text, "bans": _bans_text,
                 "promos": _promos_text}.get(key, lambda: None)()
         if asyncio.iscoroutine(text):
             text = await text
@@ -183,7 +243,66 @@ async def admin_cb(cb: CallbackQuery):
 @router.message(Command("users"))
 async def users(m: Message):
     if _staff(m):
-        await m.answer(await _users_text())
+        text, kb = await _users_page(0)
+        await m.answer(text, reply_markup=kb)
+
+
+@router.message(F.text.regexp(r"^\d{1,5}$"))
+async def pick_user_by_number(m: Message):
+    """Админ присылает номер из списка /users — открывается карточка пользователя."""
+    if m.chat.type != "private" or not _staff(m):
+        return
+    rows = await _all_users()
+    n = int(m.text)
+    if not 1 <= n <= len(rows):
+        return await m.answer("Нет пользователя с таким номером. Список: /users")
+    uid = rows[n - 1]["user_id"]
+    await m.answer(await _card_text(uid), reply_markup=_card_kb(uid, _admin(m)))
+
+
+@router.callback_query(F.data.startswith("u:"))
+async def user_cb(cb: CallbackQuery, bot: Bot):
+    _, act, arg = cb.data.split(":", 2)
+    me = cb.from_user.id
+    if not db.is_staff(me):
+        return await cb.answer("Только для админов", show_alert=True)
+    try:
+        if act == "list":
+            text, kb = await _users_page(int(arg))
+            await cb.message.edit_text(text, reply_markup=kb)
+            return await cb.answer()
+        if me != config.ADMIN_ID:
+            return await cb.answer("Только для главного админа", show_alert=True)
+        uid = int(arg)
+        note = None
+        if act == "ban":
+            if db.is_staff(uid):
+                return await cb.answer("Админов банить нельзя", show_alert=True)
+            await db.ban(uid, "через админку")
+            note = "⛔ Вы заблокированы администратором."
+        elif act == "unban":
+            await db.unban(uid)
+            note = "✅ Вы разблокированы."
+        elif act in ("prem", "vip"):
+            tier = 1 if act == "prem" else 2
+            await db.grant(uid, tier, config.SUB_DAYS)
+            note = f"🎁 Вам выдан тариф <b>{TIERS[tier]}</b> на {config.SUB_DAYS} дн."
+        elif act == "rev":
+            await db.revoke(uid)
+        elif act == "mod":
+            await db.add_mod(uid)
+            note = "🛡 Вам выданы права мини-админа: все функции без лимитов."
+        elif act == "unmod":
+            await db.del_mod(uid)
+        if note:
+            try:
+                await bot.send_message(uid, note)
+            except Exception:
+                pass
+        await cb.message.edit_text(await _card_text(uid), reply_markup=_card_kb(uid, True))
+        await cb.answer("Готово")
+    except TelegramBadRequest:
+        await cb.answer("Без изменений")
 
 
 @router.message(Command("top"))
@@ -198,19 +317,8 @@ async def user_card(m: Message):
         return
     uid, _ = _target(m, _args(m))
     if uid is None:
-        return await m.answer("Формат: <code>/user ID</code> или ответом на пересланное сообщение")
-    t, sub = await db.get_tier(uid), await db.get_sub(uid)
-    conns = (await db.fetchone("SELECT COUNT(*) c FROM connections WHERE user_id=?", (uid,)))["c"]
-    msgs = (await db.fetchone("SELECT COUNT(*) c FROM msgs m JOIN connections c ON c.conn_id=m.conn_id WHERE c.user_id=?", (uid,)))["c"]
-    refs = (await db.fetchone("SELECT COUNT(*) c FROM settings WHERE key='ref' AND value=?", (str(uid),)))["c"]
-    seen = await db.get_s(uid, "last_seen")
-    flags = [x for x, on in (("👑 админ", uid == config.ADMIN_ID), ("🛡 мини-админ", uid in db.MODS), ("🚫 забанен", uid in db.BANNED)) if on]
-    blocked = json.loads(await db.get_s(uid, "blocked_cmds", "[]"))
-    await m.answer(
-        f"👤 <b>{uid}</b> {' '.join(flags)}\nТариф: {TIERS[t]}" + (f" до {_fmt(sub['until'])}" if sub and sub['until'] > time.time() else "") +
-        f"\nПодключений: {conns} · сообщений в журнале: {msgs}\nПриглашено друзей: {refs}\n"
-        f"Последняя команда: {_fmt(seen) if seen else '—'}\nСпам: {'отключён' if 'spam' in blocked else 'доступен'}" +
-        (f"\nОтключённые команды: {', '.join('.' + c for c in blocked)}" if blocked else ""))
+        return await m.answer("Формат: <code>/user ID</code>, ответом на пересланное сообщение или номер из /users")
+    await m.answer(await _card_text(uid), reply_markup=_card_kb(uid, _admin(m)))
 
 
 # ---------- баны ----------
