@@ -7,6 +7,11 @@ from .. import db, config
 from ..registry import command, CMDS, SECTIONS, REG, TIERS
 
 
+@command("version", section="info", help="версия запущенного бота")
+async def version(ctx):
+    await ctx.edit(f"ℹ️ Версия бота: <code>{config.VERSION}</code>")
+
+
 @command("ping", section="info", help="проверить задержку бота")
 async def ping(ctx):
     t = time.perf_counter()

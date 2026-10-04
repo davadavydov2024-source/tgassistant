@@ -120,36 +120,67 @@ async def love(ctx):
 
 
 _spam_stop: set = set()
+ACTIVE: dict = {}  # (conn_id, chat_id) -> {"owner", "chat", "sent", "total", "admin"}
 
 
-@command("spam", section="anim", tier=1, usage="[количество] [текст]", help="спам: до 10 000 сообщений, затем перерыв 20 мин (у админа без лимита)")
+def list_active():
+    return list(ACTIVE.values())
+
+
+def stop_owner(owner_id=None) -> list:
+    """Остановить активный спам владельца (или всех при None). Запустить снова он сможет сам."""
+    stopped = []
+    for key, info in ACTIVE.items():
+        if owner_id is None or info["owner"] == owner_id:
+            info["admin"] = True
+            _spam_stop.add(key)
+            stopped.append(info["owner"])
+    return stopped
+
+
+@command("spam", section="anim", tier=1, usage="[количество] [текст]", help="спам: до 10 000 сообщений, затем перерыв 20 мин (у админов без лимита)")
 async def spam(ctx):
     parts = ctx.args.split(maxsplit=1)
     if len(parts) < 2 or not parts[0].isdigit():
         return await ctx.edit("Формат: <code>.spam 5 привет</code>")
-    if not ctx.is_admin:
+    key = (ctx.conn_id, ctx.chat_id)
+    if key in ACTIVE:
+        return await ctx.edit("Спам в этом чате уже идёт. Остановить: <code>.stopspam</code>")
+    if not ctx.is_staff:
         wait = float(await db.get_s(ctx.owner_id, "spam_next", "0")) - time.time()
         if wait > 0:
             return await ctx.edit(f"⏳ Спам на перезарядке: ещё {int(wait // 60)} мин {int(wait % 60)} с")
     n = ctx.limit(max(1, int(parts[0])), config.SPAM_MAX)
-    key = (ctx.conn_id, ctx.chat_id)
     _spam_stop.discard(key)
+    info = {"owner": ctx.owner_id, "chat": ctx.chat_id, "sent": 0, "total": n, "admin": False}
+    ACTIVE[key] = info
     await ctx.delete_cmd()
-    delay = 0.1 if ctx.is_admin else 0.35
+    delay = 0.1 if ctx.is_staff else 0.35
     try:
         for _ in range(n):
             if key in _spam_stop:
                 break
             await ctx.send_safe(esc(parts[1]))
+            info["sent"] += 1
             await asyncio.sleep(delay)
     finally:
         _spam_stop.discard(key)
-        if not ctx.is_admin:
+        ACTIVE.pop(key, None)
+        if info["admin"]:  # остановил админ: без перерыва, можно запустить снова
+            try:
+                await ctx.bot.send_message(ctx.owner_id, "⛔ Ваш спам остановил администратор. Вы можете запустить его снова.")
+            except Exception:
+                pass
+        elif not ctx.is_staff:
             await db.set_s(ctx.owner_id, "spam_next", time.time() + config.SPAM_COOLDOWN)
 
 
-@command("stopspam", section="anim", tier=1, help="остановить текущий спам")
+@command("stopspam", section="anim", tier=1, usage="[ID]", help="остановить спам в этом чате (админам: .stopspam ID — остановить спам пользователя)")
 async def stopspam(ctx):
+    a = ctx.args.strip()
+    if a.isdigit() and ctx.is_staff:
+        n = len(stop_owner(int(a)))
+        return await ctx.edit(f"🛑 Остановлено спам-задач: {n}")
     _spam_stop.add((ctx.conn_id, ctx.chat_id))
     await ctx.edit("🛑 Спам остановлен")
 

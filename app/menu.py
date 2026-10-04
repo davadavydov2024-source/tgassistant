@@ -5,13 +5,14 @@ from datetime import datetime
 
 from aiogram import F, Bot, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery,
 )
 
 from . import config, db
 from .registry import CMDS, SECTIONS, TIERS, section_text
+from .cmds import anim
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -24,12 +25,17 @@ HOME = (
     "Используйте кнопки ниже для навигации по разделам 🤔"
 )
 CONNECT = (
-    "🔌 <b>Подключение</b>\n\n"
-    "1. Нужен Telegram Premium.\n"
-    "2. Настройки → <b>Telegram для бизнеса</b> → <b>Чат-боты</b>.\n"
-    "3. Укажите этого бота и выдайте права: отвечать на сообщения, <b>удалять сообщения</b> (для модерации и .panic), "
-    "читать сообщения, менять имя профиля (для .timeprofile).\n"
-    "4. Напишите в любом личном чате <code>.help</code>."
+    "🔌 <b>Как подключить бота</b>\n\n"
+    "1. Обновите Telegram до последней версии.\n"
+    "2. Откройте <b>Настройки → Telegram для бизнеса → Чат-боты</b>.\n"
+    "3. Введите @username этого бота и выберите, с какими чатами он работает (например, все личные).\n"
+    "4. Включите права для бота: <b>отвечать на сообщения</b>, <b>удалять сообщения</b> (нужно для .panic и модерации), "
+    "<b>читать сообщения</b>, а для .timeprofile ещё <b>менять имя профиля</b>.\n"
+    "5. Вернитесь сюда и нажмите /start — так бот сможет писать вам в личку (напоминания, заметки, удалённые сообщения).\n"
+    "6. В любом личном чате отправьте <code>.ping</code> — бот должен ответить «pong». Все команды — <code>.help</code>.\n\n"
+    "ℹ️ Telegram Premium для подключения больше не обязателен — по сообщениям Telegram и сервисов, с мая 2026. "
+    "Если пункта «Telegram для бизнеса» у вас нет, обновите приложение; на старых версиях он может быть только у Premium.\n"
+    "⚠️ Команды работают только в личных чатах и только когда их пишете вы."
 )
 TIER_TEXT = {
     1: "✨ Анимации (.print .glit .love …)\n🎞 Медиа (.sticker .round .removebg .voice …)\n🎲 .xaxa .bomb",
@@ -57,13 +63,15 @@ def back_kb(extra=None) -> InlineKeyboardMarkup:
 
 
 def price(tier):
-    return config.PREMIUM_STARS if tier == 1 else config.VIP_STARS
+    return config.PRICES[1] if tier == 1 else config.PRICES[2]
 
 
 async def sub_line(uid) -> str:
     t = await db.get_tier(uid)
     if uid == config.ADMIN_ID:
         return "Ваш тариф: <b>VIP</b> (админ)"
+    if uid in db.MODS:
+        return "Ваш тариф: <b>VIP</b> (мини-админ)"
     row = await db.get_sub(uid)
     if t and row:
         return f"Ваш тариф: <b>{TIERS[t]}</b> до {datetime.fromtimestamp(row['until'], config.MSK):%d.%m.%Y}"
@@ -73,18 +81,25 @@ async def sub_line(uid) -> str:
 async def sub_text(uid) -> str:
     return (
         f"💳 <b>Тарифы</b>\n{await sub_line(uid)}\n\n"
-        f"⭐ <b>PREMIUM</b> — {config.PREMIUM_STARS}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[1]}\n\n"
-        f"👑 <b>VIP</b> — {config.VIP_STARS}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[2]}"
+        f"⭐ <b>PREMIUM</b> — {config.PRICES[1]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[1]}\n\n"
+        f"👑 <b>VIP</b> — {config.PRICES[2]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[2]}"
     )
 
 
 def sub_kb():
-    return back_kb([_btn(f"⭐ PREMIUM · {config.PREMIUM_STARS}⭐", "pay:1"), _btn(f"👑 VIP · {config.VIP_STARS}⭐", "pay:2")])
+    return back_kb([_btn(f"⭐ PREMIUM · {config.PRICES[1]}⭐", "pay:1"), _btn(f"👑 VIP · {config.PRICES[2]}⭐", "pay:2")])
 
 
 @router.message(CommandStart())
 @router.message(Command("menu", "help"))
-async def start(m: Message):
+async def start(m: Message, command: CommandObject = None):
+    uid = m.from_user.id
+    if uid in db.BANNED:
+        return await m.answer("⛔ Вы заблокированы администратором.")
+    await db.set_s(uid, "started", "1")
+    arg = (command.args or "") if command else ""
+    if arg.startswith("ref_") and arg[4:].isdigit() and int(arg[4:]) != uid and await db.get_s(uid, "ref") is None:
+        await db.set_s(uid, "ref", arg[4:])
     await m.answer(HOME + f"\n\n{await sub_line(m.from_user.id)}", reply_markup=home_kb())
 
 
@@ -118,6 +133,8 @@ async def on_buy_page(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("pay:"))
 async def on_pay(cb: CallbackQuery):
+    if cb.from_user.id in db.BANNED:
+        return await cb.answer("Вы заблокированы", show_alert=True)
     tier = int(cb.data[4:])
     await cb.message.answer_invoice(
         title=f"{TIERS[tier]} на {config.SUB_DAYS} дн.",
@@ -146,6 +163,10 @@ async def paid(m: Message):
 # ---------- админка ----------
 def _admin(m: Message) -> bool:
     return bool(m.from_user and m.from_user.id == config.ADMIN_ID)
+
+
+def _staff(m: Message) -> bool:
+    return bool(m.from_user and db.is_staff(m.from_user.id))
 
 
 def _tier_arg(s: str):
@@ -203,45 +224,122 @@ async def _subs_text() -> str:
 
 
 async def _stats_text() -> str:
-    users = (await db.fetchone("SELECT COUNT(DISTINCT user_id) c FROM connections"))["c"]
-    active = (await db.fetchone("SELECT COUNT(*) c FROM subs WHERE until > ?", (time.time(),)))["c"]
-    msgs = (await db.fetchone("SELECT COUNT(*) c FROM msgs"))["c"]
-    return f"📊 Подключённых аккаунтов: {users}\nАктивных подписок: {active}\nСообщений в журнале: {msgs}"
+    now = time.time()
+    day = datetime.now(config.MSK).strftime("%Y-%m-%d")
+    one = lambda q, a=(): db.fetchone(q, a)
+    users = (await one("SELECT COUNT(DISTINCT user_id) c FROM connections"))["c"]
+    started = (await one("SELECT COUNT(*) c FROM settings WHERE key='started'"))["c"]
+    active = (await one("SELECT COUNT(*) c FROM settings WHERE key='last_seen' AND CAST(value AS REAL) > ?", (now - 86400,)))["c"]
+    by = {r["tier"]: r["c"] for r in await db.fetchall("SELECT tier, COUNT(*) c FROM subs WHERE until > ? GROUP BY tier", (now,))}
+    top = await db.fetchall("SELECT cmd, n FROM cmdstat WHERE day=? ORDER BY n DESC LIMIT 5", (day,))
+    total = (await one("SELECT COALESCE(SUM(n),0) c FROM cmdstat WHERE day=?", (day,)))["c"]
+    lines = [
+        "📊 <b>Статистика</b>",
+        f"Подключённых аккаунтов: {users} · запускали бота: {started}",
+        f"Активных за 24 ч: {active}",
+        f"Подписки: PREMIUM {by.get(1, 0)} · VIP {by.get(2, 0)}",
+        f"Мини-админов: {len(db.MODS)} · забанено: {len(db.BANNED)}",
+        f"Команд сегодня: {total}",
+    ]
+    if top:
+        lines.append("Топ команд: " + ", ".join(f".{r['cmd']} ({r['n']})" for r in top))
+    if db.STATE["maint"]:
+        lines.append("🛠 Включён режим техработ")
+    return "\n".join(lines)
 
 
-ADMIN_HELP = (
-    "👑 <b>Админ-панель</b>\n\n"
-    "<code>/give ID premium|vip [дней]</code> — подарить подписку\n"
-    "Можно ответить на пересланное сообщение человека: <code>/give vip 30</code>\n"
-    "<code>/revoke ID</code> — снять подписку\n"
-    "В любом личном чате: <code>.give vip 30</code> — подарить собеседнику"
-)
+def _spam_text() -> str:
+    items = anim.list_active()
+    if not items:
+        return "🚨 Активного спама сейчас нет"
+    return "🚨 <b>Активный спам</b>\n" + "\n".join(
+        f"<code>{i['owner']}</code> · чат <code>{i['chat']}</code> · {i['sent']}/{i['total']}" for i in items[:30]
+    ) + "\n\nОстановить: <code>/stopspam ID</code> или <code>/stopspam all</code>"
 
 
-@router.message(Command("admin"))
-async def admin_panel(m: Message):
+@router.message(Command("spammers"))
+async def spammers(m: Message):
+    if _staff(m):
+        await m.answer(_spam_text())
+
+
+@router.message(Command("stopspam"))
+async def stopspam_cmd(m: Message, bot: Bot):
+    if not _staff(m):
+        return
+    a = (m.text or "").split()[1:]
+    if a and a[0].lower() == "all":
+        n = len(anim.stop_owner(None))
+    elif a and a[0].isdigit():
+        n = len(anim.stop_owner(int(a[0])))
+    else:
+        return await m.answer("Формат: <code>/stopspam ID</code> или <code>/stopspam all</code>. Список: /spammers")
+    await m.answer(f"🛑 Остановлено спам-задач: {n}. Пользователь сможет запустить спам снова.")
+
+
+@router.message(Command("startsave"))
+async def startsave_dm(m: Message):
+    if await db.get_tier(m.from_user.id) < 1:
+        return await m.answer("Сохранение удалённых и изменённых сообщений — на тарифе PREMIUM и выше. Тарифы: /start")
+    await db.set_s(m.from_user.id, "save", "1")
+    await m.answer("💾 Включено: удалённые для всех и изменённые сообщения собеседников будут приходить сюда. Выключить: /stopsave")
+
+
+@router.message(Command("stopsave"))
+async def stopsave_dm(m: Message):
+    await db.set_s(m.from_user.id, "save", "0")
+    await m.answer("⏹ Сохранение выключено. Включить: /startsave")
+
+
+@router.message(Command("addmod"))
+async def addmod(m: Message, bot: Bot):
     if not _admin(m):
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[_btn("📋 Подписки", "adm:subs"), _btn("📊 Статистика", "adm:stats")]])
-    await m.answer(ADMIN_HELP, reply_markup=kb)
+    uid, _ = _target(m, (m.text or "").split()[1:])
+    if uid is None:
+        return await m.answer("Формат: <code>/addmod ID</code> или ответом на пересланное сообщение человека")
+    await db.add_mod(uid)
+    await m.answer(f"🛡 {uid} — мини-админ")
+    try:
+        await bot.send_message(uid, "🛡 Вам выданы права мини-админа: все функции без лимитов. Выдавать подписки нельзя.")
+    except Exception:
+        pass
 
 
-@router.callback_query(F.data.startswith("adm:"))
-async def admin_cb(cb: CallbackQuery):
-    if cb.from_user.id != config.ADMIN_ID:
-        return await cb.answer("Только для админа", show_alert=True)
-    text = await (_subs_text() if cb.data == "adm:subs" else _stats_text())
-    await cb.message.answer(text)
-    await cb.answer()
+@router.message(Command("delmod"))
+async def delmod(m: Message):
+    if not _admin(m):
+        return
+    uid, _ = _target(m, (m.text or "").split()[1:])
+    if uid is None:
+        return await m.answer("Формат: <code>/delmod ID</code>")
+    await db.del_mod(uid)
+    await m.answer("✅ Мини-админ снят")
+
+
+@router.message(Command("mods"))
+async def mods(m: Message):
+    if _admin(m):
+        await m.answer("🛡 <b>Мини-админы</b>\n" + ("\n".join(f"<code>{u}</code>" for u in sorted(db.MODS)) or "пока нет"))
+
+
+@router.message(Command("version"))
+async def version(m: Message):
+    await m.answer(f"ℹ️ Версия бота: <code>{config.VERSION}</code>")
+
+
+@router.message(Command("id"))
+async def my_id(m: Message):
+    await m.answer(f"Ваш ID: <code>{m.from_user.id}</code>")
 
 
 @router.message(Command("subs"))
 async def subs(m: Message):
-    if _admin(m):
+    if _staff(m):
         await m.answer(await _subs_text())
 
 
 @router.message(Command("stats"))
 async def stats(m: Message):
-    if _admin(m):
+    if _staff(m):
         await m.answer(await _stats_text())

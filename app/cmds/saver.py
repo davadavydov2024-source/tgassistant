@@ -61,7 +61,7 @@ async def _deliver(bot, owner_id, row, header):
 
 
 async def notify_deleted(bot, owner_id, row):
-    await _deliver(bot, owner_id, row, "🗑 Удалено")
+    await _deliver(bot, owner_id, row, "🗑 Удалено для всех")
 
 
 async def notify_edited(bot, owner_id, row, new_text):

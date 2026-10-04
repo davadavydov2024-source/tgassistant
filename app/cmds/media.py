@@ -75,14 +75,29 @@ async def _photo(ctx, img_bytes, name="img.jpg"):
     await ctx.delete_cmd()
 
 
+def _ffmpeg_bin():
+    import shutil
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
 async def ffmpeg(data: bytes, in_ext: str, out_ext: str, *args) -> bytes:
+    exe = _ffmpeg_bin()
+    if not exe:
+        raise RuntimeError("ffmpeg не найден (pip install imageio-ffmpeg)")
     with tempfile.TemporaryDirectory() as d:
         ip, op = os.path.join(d, "in." + in_ext), os.path.join(d, "out." + out_ext)
         with open(ip, "wb") as f:
             f.write(data)
         try:
             proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-loglevel", "error", "-i", ip, *args, op,
+                exe, "-y", "-loglevel", "error", "-i", ip, *args, op,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:

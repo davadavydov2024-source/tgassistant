@@ -4,7 +4,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
-from . import config
+from . import config, db
 
 
 class Ctx:
@@ -35,9 +35,14 @@ class Ctx:
     def is_admin(self) -> bool:
         return self.owner_id == config.ADMIN_ID
 
+    @property
+    def is_staff(self) -> bool:
+        """Админ или мини-админ: без лимитов и платных ограничений."""
+        return db.is_staff(self.owner_id)
+
     def limit(self, n: int, cap: int) -> int:
-        """Лимит для обычных пользователей; админу — без ограничений."""
-        return n if self.is_admin else min(n, cap)
+        """Лимит для обычных пользователей; админу и мини-админам — без ограничений."""
+        return n if self.is_staff else min(n, cap)
 
     async def send_safe(self, text: str, **kw):
         """send с ожиданием при флуд-лимите Telegram."""

@@ -1,13 +1,14 @@
 import html
+import json
 import logging
 import time
 
 from aiogram import Bot, Router
 from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
 
-from . import db, registry
+from . import config, db, registry
 from .ctx import Ctx
-from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra  # noqa: F401  (регистрация команд)
+from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra, more  # noqa: F401  (регистрация команд)
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -25,16 +26,30 @@ async def owner_of(bot: Bot, conn_id: str) -> int:
 @router.business_connection()
 async def on_connection(bc: BusinessConnection, bot: Bot):
     u = bc.user
+    first = not await db.fetchone("SELECT 1 FROM connections WHERE user_id=?", (u.id,))
     await db.save_conn(bc.id, u.id, u.first_name, u.last_name or "")
-    if bc.is_enabled:
+    if not bc.is_enabled:
+        return
+    trial = ""
+    if first and config.TRIAL_DAYS > 0 and not db.is_staff(u.id) and not await db.get_sub(u.id):
+        await db.grant(u.id, 1, config.TRIAL_DAYS)
+        trial = f"\n🎁 Вам подарено <b>{config.TRIAL_DAYS} дн. PREMIUM</b> на пробу."
+    inviter = await db.get_s(u.id, "ref") if first else None
+    if inviter and inviter.isdigit() and int(inviter) != u.id and config.REF_DAYS > 0:
+        await db.apply_sub(int(inviter), 1, config.REF_DAYS)
         try:
-            await bot.send_message(
-                bc.user_chat_id,
-                "✅ <b>Бот подключён к вашему аккаунту.</b>\nПишите команды с точки в любом личном чате, например "
-                "<code>.help</code> или <code>.love</code>.\nМеню и тарифы — /start",
-            )
+            await bot.send_message(int(inviter), f"🎉 Ваш друг подключил бота! Вам +{config.REF_DAYS} дн. PREMIUM.")
         except Exception:
             pass
+    try:
+        await bot.send_message(
+            bc.user_chat_id,
+            "✅ <b>Бот подключён к вашему аккаунту.</b>\n"
+            "Проверьте: напишите в любом личном чате <code>.ping</code>, список команд — <code>.help</code>.\n"
+            "Меню и тарифы — /start." + trial,
+        )
+    except Exception:
+        pass
 
 
 async def dispatch(ctx: Ctx, text: str):
@@ -46,12 +61,24 @@ async def dispatch(ctx: Ctx, text: str):
     if not cmd:
         return
     ctx.args = parts[1].strip() if len(parts) > 1 else ""
+    if not ctx.is_staff:
+        if ctx.owner_id in db.BANNED:
+            return
+        if db.STATE["maint"]:
+            return await ctx.edit("🛠 Технические работы, скоро вернёмся")
+        if cmd.names[0] in db.DISABLED:
+            return await ctx.edit("⛔ Эта команда временно отключена администратором")
+        blocked = json.loads(await db.get_s(ctx.owner_id, "blocked_cmds", "[]"))
+        if cmd.names[0] in blocked:
+            return await ctx.edit("⛔ Эта команда отключена для вас администратором")
     if name != "on" and await db.get_s(ctx.owner_id, "enabled", "1") == "0":
         return
     if await db.get_tier(ctx.owner_id) < cmd.tier:
         return await ctx.edit(f"🔒 Команда <code>.{name}</code> доступна на тарифе {registry.TIERS[cmd.tier]}. Оформить: /start в боте")
     try:
         await cmd.fn(ctx)
+        await db.log_cmd(cmd.names[0])
+        await db.touch_seen(ctx.owner_id)
     except Exception as e:
         log.exception("команда .%s упала", name)
         try:
