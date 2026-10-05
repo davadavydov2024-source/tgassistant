@@ -17,28 +17,8 @@ from .cmds import anim, saver
 log = logging.getLogger(__name__)
 router = Router()
 
-HOME = (
-    "<b>Добро пожаловать в ассистента 👀</b>\n\n"
-    "Максимум возможностей — минимум лишних действий ✨\n"
-    "<blockquote>Бот работает через Telegram Business: подключите его к аккаунту и пишите команды с точки "
-    "в любом личном чате — анимации, игры, медиа, модерация и многое другое.</blockquote>\n"
-    "Используйте кнопки ниже для навигации по разделам 🤔"
-)
-CONNECT = (
-    "🔌 <b>Как подключить бота</b>\n\n"
-    "1. Обновите Telegram до последней версии.\n"
-    "2. Откройте <b>Настройки → Telegram для бизнеса → Чат-боты</b>.\n"
-    "3. Введите @username этого бота и выберите, с какими чатами он работает (например, все личные).\n"
-    "4. Включите права для бота: <b>отвечать на сообщения</b>, <b>удалять сообщения</b> (нужно для .panic и модерации), "
-    "<b>читать сообщения</b>, а для .timeprofile ещё <b>менять имя профиля</b>.\n"
-    "5. Вернитесь сюда и нажмите /start — так бот сможет писать вам в личку (напоминания, заметки, удалённые сообщения).\n"
-    "6. В любом личном чате отправьте <code>.ping</code> — бот должен ответить «pong». Все команды — <code>.help</code>.\n\n"
-    "ℹ️ Telegram Premium для подключения больше не обязателен — по сообщениям Telegram и сервисов, с мая 2026. "
-    "Если пункта «Telegram для бизнеса» у вас нет, обновите приложение; на старых версиях он может быть только у Premium.\n"
-    "⚠️ Команды работают только в личных чатах и только когда их пишете вы."
-)
 TIER_TEXT = {
-    1: "✨ Анимации (.print .glit .love …)\n🎞 Медиа (.sticker .round .removebg .voice …)\n🎲 .xaxa .bomb",
+    1: "✨ Анимации (.print .glit .love …)\n🎞 Медиа (.sticker .removebg .voice .krom …)\n💥 .spam .xaxa .bomb\n💤 .afk .later",
     2: "Всё из PREMIUM +\n🛡 Модерация (.mute .antimat .antispam …)\n👤 Профиль и авто (.panic .autoread .timeprofile …)",
 }
 
@@ -47,42 +27,101 @@ def _btn(text, data):
     return InlineKeyboardButton(text=text, callback_data=data)
 
 
-def home_kb() -> InlineKeyboardMarkup:
-    secs = [(sid, v) for sid, v in SECTIONS.items() if any(c.section == sid for c in CMDS)]
-    btns = [_btn(f"{icon} {title}", f"m:{sid}") for sid, (icon, title) in secs]
-    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
-    rows.append([_btn("🔌 Подключение", "m:connect")])
-    rows.append([_btn("⭐ PREMIUM", "buy:1"), _btn("👑 VIP", "buy:2")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def _visible():
+    return [sid for sid in SECTIONS if any(c.section == sid and not c.hidden for c in CMDS)]
 
 
-def back_kb(extra=None) -> InlineKeyboardMarkup:
-    rows = [extra] if extra else []
-    rows.append([_btn("⬅️ В меню", "m:home")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def _stitle(sid):
+    icon, title = SECTIONS[sid]
+    return f"{icon} {title}"
 
 
 def price(tier):
-    return config.PRICES[1] if tier == 1 else config.PRICES[2]
+    return config.PRICES[tier]
 
 
 async def sub_line(uid) -> str:
     t = await db.get_tier(uid)
     if uid == config.ADMIN_ID:
-        return "Ваш тариф: <b>VIP</b> (админ)"
+        return "💎 Тариф: <b>VIP</b> (админ)"
     if uid in db.MODS:
-        return "Ваш тариф: <b>VIP</b> (мини-админ)"
+        return "💎 Тариф: <b>VIP</b> (мини-админ)"
     row = await db.get_sub(uid)
     if t and row:
-        return f"Ваш тариф: <b>{TIERS[t]}</b> до {datetime.fromtimestamp(row['until'], config.MSK):%d.%m.%Y}"
-    return "Ваш тариф: <b>FREE</b>"
+        return f"💎 Тариф: <b>{TIERS[t]}</b> до {datetime.fromtimestamp(row['until'], config.MSK):%d.%m.%Y}"
+    return "💎 Тариф: <b>FREE</b>"
+
+
+async def _connected(uid) -> int:
+    return (await db.fetchone("SELECT COUNT(*) c FROM connections WHERE user_id=?", (uid,)))["c"]
+
+
+# ---------- страницы ----------
+async def home_text(uid, bot) -> str:
+    status = "✅ Бот подключён к вашему аккаунту" if await _connected(uid) else "⚠️ Бот пока не подключён — нажмите «Подключение»"
+    return (
+        "<b>Ассистент для личных чатов</b> 👀\n<i>Максимум возможностей — минимум лишних действий</i>\n\n"
+        f"{status}\n{await sub_line(uid)}\n\n"
+        "<blockquote>Пишите команды с точки в любом личном чате: <code>.help</code>, <code>.love</code>, <code>.sticker</code>, "
+        "<code>.calc</code> … Удалённые и изменённые сообщения собеседников приходят сюда.</blockquote>"
+    )
+
+
+def home_kb(uid) -> InlineKeyboardMarkup:
+    rows = [
+        [_btn("🔌 Подключение", "m:connect"), _btn("📖 Команды", "m:cmds")],
+        [_btn("💳 Тарифы", "m:sub"), _btn("👤 Профиль", "m:profile")],
+        [_btn("🎟 Промокод", "m:promo"), _btn("👥 Друзья", "m:ref")],
+        [_btn("🩺 Диагностика", "m:diag"), _btn("ℹ️ О боте", "m:about")],
+    ]
+    if db.is_staff(uid):
+        rows.append([_btn("👑 Админка" if uid == config.ADMIN_ID else "🛡 Мини-админка", "adm:panel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def back_kb(*extra_rows) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[*extra_rows, [_btn("🏠 В меню", "m:home")]])
+
+
+def cmds_kb() -> InlineKeyboardMarkup:
+    btns = []
+    for sid in _visible():
+        lock = " 🔒" if max(c.tier for c in CMDS if c.section == sid and not c.hidden) else ""
+        btns.append(_btn(_stitle(sid) + lock, f"m:{sid}"))
+    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    return back_kb(*rows)
+
+
+def section_kb(sid) -> InlineKeyboardMarkup:
+    vis = _visible()
+    k = vis.index(sid)
+    prev, nxt = vis[k - 1], vis[(k + 1) % len(vis)]
+    return back_kb([_btn("⬅️ " + _stitle(prev), f"m:{prev}"), _btn(_stitle(nxt) + " ➡️", f"m:{nxt}")], [_btn("📖 Все разделы", "m:cmds")])
+
+
+def connect_text(username: str) -> str:
+    return (
+        "🔌 <b>Как подключить бота</b>\n\n"
+        "1️⃣ Откройте <b>Настройки</b> в Telegram.\n"
+        "2️⃣ Нажмите <b>Изменить профиль</b>.\n"
+        "3️⃣ Выберите <b>Автоматизация чатов</b>.\n"
+        f"4️⃣ Укажите бота <code>@{username}</code> и выберите, с какими чатами он работает (например, все личные).\n"
+        "5️⃣ Включите права: <b>отвечать на сообщения</b>, <b>удалять сообщения</b> (для .panic и модерации), "
+        "<b>читать сообщения</b>, а для .timeprofile ещё <b>менять имя профиля</b>.\n"
+        "6️⃣ Вернитесь сюда и нажмите /start — так бот сможет писать вам в личку (удалённые сообщения, напоминания, заметки).\n"
+        "7️⃣ В любом личном чате отправьте <code>.ping</code> — бот должен ответить «pong». Все команды — <code>.help</code>.\n\n"
+        "ℹ️ Telegram Premium для подключения не обязателен — по сообщениям сервисов, с мая 2026. "
+        "Если пункта нет, обновите Telegram; на старых версиях раздел может быть только у Premium.\n"
+        "⚠️ Команды работают только в личных чатах и только когда их пишете вы."
+    )
 
 
 async def sub_text(uid) -> str:
     return (
         f"💳 <b>Тарифы</b>\n{await sub_line(uid)}\n\n"
         f"⭐ <b>PREMIUM</b> — {config.PRICES[1]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[1]}\n\n"
-        f"👑 <b>VIP</b> — {config.PRICES[2]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[2]}"
+        f"👑 <b>VIP</b> — {config.PRICES[2]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[2]}\n\n"
+        "<i>Бесплатно: основные команды, игры, серии, утилиты и сохранение удалённых сообщений. Есть промокод — /promo КОД.</i>"
     )
 
 
@@ -90,9 +129,64 @@ def sub_kb():
     return back_kb([_btn(f"⭐ PREMIUM · {config.PRICES[1]}⭐", "pay:1"), _btn(f"👑 VIP · {config.PRICES[2]}⭐", "pay:2")])
 
 
+async def profile_text(uid, bot) -> str:
+    me = await bot.me()
+    refs = (await db.fetchone("SELECT COUNT(*) c FROM settings WHERE key='ref' AND value=?", (str(uid),)))["c"]
+    saved = (await db.fetchone("SELECT COUNT(*) c FROM saved s JOIN connections c ON c.conn_id=s.conn_id WHERE c.user_id=?", (uid,)))["c"]
+    save_on = await db.get_s(uid, "save", "1") == "1"
+    return (
+        f"👤 <b>Профиль</b>\nID: <code>{uid}</code>\n{await sub_line(uid)}\n"
+        f"Подключено аккаунтов: {await _connected(uid)}\n"
+        f"Сохранение удалённых: {'включено' if save_on else 'выключено (/startsave)'} · в базе: {saved}\n"
+        f"Приглашено друзей: {refs}\n\n"
+        f"Ваша ссылка: <code>https://t.me/{me.username}?start=ref_{uid}</code>"
+    )
+
+
+async def page(key: str, uid: int, bot):
+    """Возвращает (текст, клавиатура) для экрана меню или None."""
+    if key == "home":
+        return await home_text(uid, bot), home_kb(uid)
+    if key == "cmds":
+        return "📖 <b>Команды</b>\nВыберите раздел. 🔒 — нужен платный тариф.\nСписок одной строкой: <code>.help</code> в любом чате.", cmds_kb()
+    if key in SECTIONS and key in _visible():
+        return section_text(key), section_kb(key)
+    if key == "connect":
+        return connect_text((await bot.me()).username), back_kb([_btn("🩺 Проверить подключение", "m:diag")])
+    if key == "sub":
+        return await sub_text(uid), sub_kb()
+    if key == "profile":
+        return await profile_text(uid, bot), back_kb([_btn("👥 Пригласить друга", "m:ref")])
+    if key == "promo":
+        return "🎟 <b>Промокод</b>\nОтправьте боту сообщение:\n<code>/promo ВАШ_КОД</code>", back_kb()
+    if key == "ref":
+        me = await bot.me()
+        return (f"👥 <b>Пригласи друга</b>\nЗа каждого друга, который подключит бота, вы получаете +{config.REF_DAYS} дн. PREMIUM.\n\n"
+                f"Ваша ссылка:\n<code>https://t.me/{me.username}?start=ref_{uid}</code>"), back_kb()
+    if key == "diag":
+        return await saver.diag_text(bot, uid), back_kb([_btn("🔄 Обновить", "m:diag")])
+    if key == "about":
+        return (f"ℹ️ <b>О боте</b>\nВерсия: <code>{config.VERSION}</code>\n"
+                f"Команд: {len([c for c in CMDS if not c.hidden])} · разделов: {len(_visible())}\n\n"
+                "Анимации, игры, медиа-инструменты, утилиты, серии, модерация и сохранение удалённых сообщений — прямо в ваших личных чатах."), back_kb()
+    return None
+
+
+async def _guard(m: Message) -> bool:
+    if m.from_user.id in db.BANNED:
+        await m.answer("⛔ Вы заблокированы администратором.")
+        return False
+    return True
+
+
+async def _show(m: Message, bot: Bot, key: str):
+    if await _guard(m):
+        text, kb = await page(key, m.from_user.id, bot)
+        await m.answer(text, reply_markup=kb)
+
+
 @router.message(CommandStart())
-@router.message(Command("menu", "help"))
-async def start(m: Message, command: CommandObject = None):
+async def start(m: Message, bot: Bot, command: CommandObject = None):
     uid = m.from_user.id
     if uid in db.BANNED:
         return await m.answer("⛔ Вы заблокированы администратором.")
@@ -100,21 +194,35 @@ async def start(m: Message, command: CommandObject = None):
     arg = (command.args or "") if command else ""
     if arg.startswith("ref_") and arg[4:].isdigit() and int(arg[4:]) != uid and await db.get_s(uid, "ref") is None:
         await db.set_s(uid, "ref", arg[4:])
-    await m.answer(HOME + f"\n\n{await sub_line(m.from_user.id)}", reply_markup=home_kb())
+    await _show(m, bot, "home")
+
+
+@router.message(Command("menu", "help"))
+async def menu_cmd(m: Message, bot: Bot):
+    await _show(m, bot, "home")
+
+
+@router.message(Command("connect"))
+async def connect_cmd(m: Message, bot: Bot):
+    await _show(m, bot, "connect")
+
+
+@router.message(Command("tariffs", "sub", "buy"))
+async def tariffs_cmd(m: Message, bot: Bot):
+    await _show(m, bot, "sub")
+
+
+@router.message(Command("profile"))
+async def profile_cmd(m: Message, bot: Bot):
+    await _show(m, bot, "profile")
 
 
 @router.callback_query(F.data.startswith("m:"))
-async def on_menu(cb: CallbackQuery):
-    key = cb.data[2:]
-    kb = back_kb()
-    if key == "home":
-        text, kb = HOME + f"\n\n{await sub_line(cb.from_user.id)}", home_kb()
-    elif key == "connect":
-        text = CONNECT
-    elif key in SECTIONS:
-        text = section_text(key)
-    else:
+async def on_menu(cb: CallbackQuery, bot: Bot):
+    res = await page(cb.data[2:], cb.from_user.id, bot)
+    if res is None:
         return await cb.answer()
+    text, kb = res
     try:
         await cb.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
@@ -123,9 +231,10 @@ async def on_menu(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("buy:"))
-async def on_buy_page(cb: CallbackQuery):
+async def on_buy_page(cb: CallbackQuery, bot: Bot):
+    text, kb = await page("sub", cb.from_user.id, bot)
     try:
-        await cb.message.edit_text(await sub_text(cb.from_user.id), reply_markup=sub_kb())
+        await cb.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
         pass
     await cb.answer()
@@ -138,7 +247,7 @@ async def on_pay(cb: CallbackQuery):
     tier = int(cb.data[4:])
     await cb.message.answer_invoice(
         title=f"{TIERS[tier]} на {config.SUB_DAYS} дн.",
-        description=TIER_TEXT[tier].replace("\n", ", "),
+        description=TIER_TEXT[tier].replace("\n", ", ")[:250],
         payload=f"sub:{tier}",
         currency="XTR",
         prices=[LabeledPrice(label=TIERS[tier], amount=price(tier))],
@@ -196,6 +305,7 @@ async def give(m: Message, bot: Bot):
     tier = _tier_arg(a[0])
     days = int(a[1]) if len(a) > 1 and a[1].isdigit() else config.SUB_DAYS
     await db.grant(uid, tier, days)
+    await db.alog(m.from_user.id, f"выдал {TIERS[tier]} {days}д → {uid}")
     await m.answer(f"✅ {uid}: {TIERS[tier]} на {days} дн.")
     try:
         await bot.send_message(uid, f"🎁 Вам выдан тариф <b>{TIERS[tier]}</b> на {days} дн.")
@@ -211,6 +321,7 @@ async def revoke(m: Message):
     if uid is None:
         return await m.answer("Формат: <code>/revoke user_id</code> или ответом на пересланное сообщение")
     await db.revoke(uid)
+    await db.alog(m.from_user.id, f"снял подписку → {uid}")
     await m.answer("✅ Подписка снята")
 
 
@@ -297,6 +408,7 @@ async def addmod(m: Message, bot: Bot):
     if uid is None:
         return await m.answer("Формат: <code>/addmod ID</code> или ответом на пересланное сообщение человека")
     await db.add_mod(uid)
+    await db.alog(m.from_user.id, f"назначил мини-админа → {uid}")
     await m.answer(f"🛡 {uid} — мини-админ")
     try:
         await bot.send_message(uid, "🛡 Вам выданы права мини-админа: все функции без лимитов. Выдавать подписки нельзя.")
@@ -312,6 +424,7 @@ async def delmod(m: Message):
     if uid is None:
         return await m.answer("Формат: <code>/delmod ID</code>")
     await db.del_mod(uid)
+    await db.alog(m.from_user.id, f"снял мини-админа → {uid}")
     await m.answer("✅ Мини-админ снят")
 
 

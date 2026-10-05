@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from aiogram.types import ErrorEvent
+from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 
 from app import config, db, menu, business, admin_panel, botcmds, errlog
 from app.cmds import profile, utils
@@ -35,6 +35,27 @@ async def main():
     asyncio.create_task(profile.time_loop(bot))
     asyncio.create_task(utils.remind_loop(bot))
     me = await bot.me()
+    user_cmds = [
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="connect", description="Как подключить бота"),
+        BotCommand(command="tariffs", description="Тарифы и оплата"),
+        BotCommand(command="profile", description="Мой профиль"),
+        BotCommand(command="promo", description="Ввести промокод"),
+        BotCommand(command="ref", description="Пригласить друга"),
+        BotCommand(command="diag", description="Диагностика бота"),
+        BotCommand(command="stopsave", description="Выключить сохранение удалённых"),
+        BotCommand(command="startsave", description="Включить сохранение удалённых"),
+    ]
+    try:
+        await bot.set_my_commands(user_cmds)
+        if config.ADMIN_ID:
+            await bot.set_my_commands(
+                user_cmds + [BotCommand(command="admin", description="Админ-панель"), BotCommand(command="users", description="Пользователи"),
+                             BotCommand(command="stats", description="Статистика"), BotCommand(command="spammers", description="Кто сейчас спамит")],
+                scope=BotCommandScopeChat(chat_id=config.ADMIN_ID))
+        await bot.set_my_short_description("Ассистент для личных чатов: анимации, игры, медиа, утилиты, сохранение удалённых сообщений")
+    except Exception as e:
+        logging.warning("не удалось настроить меню команд: %s", e)
     logging.info("Бот @%s запущен, версия %s", me.username, config.VERSION)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

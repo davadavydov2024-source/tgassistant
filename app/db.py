@@ -8,6 +8,7 @@ from . import config
 
 _db: aiosqlite.Connection | None = None
 MODS: set[int] = set()  # мини-админы (кэш)
+CFG_KEYS = {"trial": "TRIAL_DAYS", "ref": "REF_DAYS", "spam_max": "SPAM_MAX", "spam_cd": "SPAM_COOLDOWN", "sub_days": "SUB_DAYS"}
 BANNED: set[int] = set()
 DISABLED: set[str] = set()  # глобально отключённые команды
 STATE = {"maint": False}  # режим техработ
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS cmdstat(day TEXT, cmd TEXT, n INTEGER, PRIMARY KEY(da
 CREATE TABLE IF NOT EXISTS promos(code TEXT PRIMARY KEY, tier INTEGER, days INTEGER, uses_left INTEGER);
 CREATE TABLE IF NOT EXISTS promo_used(code TEXT, user_id INTEGER, PRIMARY KEY(code, user_id));
 CREATE TABLE IF NOT EXISTS banned(user_id INTEGER PRIMARY KEY, reason TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS adminlog(ts REAL, admin_id INTEGER, text TEXT);
 CREATE INDEX IF NOT EXISTS msgs_idx ON msgs(conn_id, chat_id);
 """
 
@@ -56,10 +58,22 @@ async def load_global():
     STATE["maint"] = (await get_s(0, "maint", "0")) == "1"
     BANNED.clear()
     BANNED.update(r["user_id"] for r in await fetchall("SELECT user_id FROM banned"))
+    for name, attr in CFG_KEYS.items():
+        v = await get_s(0, f"cfg_{name}")
+        if v and v.lstrip("-").isdigit():
+            setattr(config, attr, int(v))
     for t in (1, 2):
         v = await get_s(0, f"price_{t}")
         if v and v.isdigit():
             config.PRICES[t] = int(v)
+
+
+async def alog(admin_id: int, text: str):
+    await execute("INSERT INTO adminlog VALUES(?,?,?)", (time.time(), admin_id, text[:300]))
+
+
+async def recent_log(n: int = 25):
+    return await fetchall("SELECT * FROM adminlog ORDER BY ts DESC LIMIT ?", (n,))
 
 
 async def ban(user_id: int, reason: str = ""):

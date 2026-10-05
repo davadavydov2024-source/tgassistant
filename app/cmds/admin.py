@@ -23,6 +23,7 @@ async def _dm(ctx, uid, text):
 
 async def _gift(ctx, uid, tier, days):
     await db.grant(uid, tier, days)
+    await db.alog(ctx.owner_id, f"выдал {TIERS[tier]} {days}д → {uid} (в чате)")
     await ctx.edit(f"🎁 <code>{uid}</code>: <b>{TIERS[tier]}</b> на {days} дн.")
     await _dm(ctx, uid, f"🎁 Вам выдан тариф <b>{TIERS[tier]}</b> на {days} дн.")
 
@@ -61,6 +62,7 @@ async def revoke(ctx):
         return
     uid, _ = _uid(ctx, ctx.args.split())
     await db.revoke(uid)
+    await db.alog(ctx.owner_id, f"снял подписку → {uid} (в чате)")
     await ctx.edit(f"🗑 Подписка <code>{uid}</code> снята")
 
 
@@ -70,6 +72,7 @@ async def addmod(ctx):
         return
     uid, _ = _uid(ctx, ctx.args.split())
     await db.add_mod(uid)
+    await db.alog(ctx.owner_id, f"назначил мини-админа → {uid} (в чате)")
     await ctx.edit(f"🛡 <code>{uid}</code> — мини-админ: без лимитов, VIP-функции, но без выдачи подписок")
     await _dm(ctx, uid, "🛡 Вам выданы права мини-админа: все функции без лимитов. Выдавать подписки нельзя.")
 
@@ -80,6 +83,7 @@ async def delmod(ctx):
         return
     uid, _ = _uid(ctx, ctx.args.split())
     await db.del_mod(uid)
+    await db.alog(ctx.owner_id, f"снял мини-админа → {uid} (в чате)")
     await ctx.edit(f"✅ <code>{uid}</code> больше не мини-админ")
 
 

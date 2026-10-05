@@ -191,6 +191,66 @@ async def pet(ctx):
     )
 
 
+# ---------- виселица ----------
+HANG_WORDS = ["программа", "телефон", "компьютер", "картошка", "лошадь", "радуга", "география", "мороженое", "библиотека", "светофор", "крокодил", "парашют"]
+
+
+def _hang_render(g):
+    shown = " ".join(c if c in g["guessed"] else "_" for c in g["word"])
+    wrong = [c for c in g["guessed"] if c not in g["word"]]
+    return f"{shown}\n❤️ Жизней: {g['lives']}" + (f"\n❌ Ошибки: {', '.join(wrong)}" if wrong else "")
+
+
+@command("виселица", "hangman", section="games", help="виселица: угадайте слово по буквам (пишите по одной букве)")
+async def hangman(ctx):
+    g = {"kind": "hang", "word": random.choice(HANG_WORDS), "guessed": [], "lives": 6}
+    await _save(ctx, g)
+    await ctx.edit(f"🪢 <b>Виселица</b>\nПишите по одной букве или слово целиком.\n\n{_hang_render(g)}")
+
+
+async def _hang_move(ctx, g, text):
+    t = text.lower().replace("ё", "е")
+    if not re.fullmatch(r"[а-я]+", t):
+        return
+    if len(t) == len(g["word"]) and t != g["word"]:
+        g["lives"] -= 1
+        await _save(ctx, g) if g["lives"] > 0 else await _stop(ctx)
+        return await ctx.send(f"❌ Нет, это не «{html.escape(t)}»." + (f"\n\n{_hang_render(g)}" if g["lives"] > 0 else f"\n😔 Проиграли. Слово: <b>{g['word']}</b>"))
+    if t == g["word"] or (len(t) == 1 and set(g["word"]) <= set(g["guessed"]) | {t}):
+        await _stop(ctx)
+        return await ctx.send(f"🎉 Угадано! Слово: <b>{g['word']}</b>")
+    if len(t) != 1 or t in g["guessed"]:
+        return
+    g["guessed"].append(t)
+    if t not in g["word"]:
+        g["lives"] -= 1
+        if g["lives"] <= 0:
+            await _stop(ctx)
+            return await ctx.send(f"😔 Проиграли. Слово: <b>{g['word']}</b>")
+    await _save(ctx, g)
+    await ctx.send(_hang_render(g))
+
+
+# ---------- угадай число ----------
+@command("угадай", "guess", section="games", usage="[макс]", help="угадай число: бот подсказывает «больше/меньше»")
+async def guess(ctx):
+    hi = min(10**6, max(10, int(ctx.args))) if ctx.args.isdigit() else 100
+    await _save(ctx, {"kind": "guess", "secret": random.randint(1, hi), "hi": hi, "tries": 0})
+    await ctx.edit(f"🎯 <b>Угадай число</b> от 1 до {hi}. Присылайте числа — подскажу «больше» или «меньше».")
+
+
+async def _guess_move(ctx, g, text):
+    if not re.fullmatch(r"\d{1,7}", text):
+        return
+    n = int(text)
+    g["tries"] += 1
+    if n == g["secret"]:
+        await _stop(ctx)
+        return await ctx.send(f"🎉 Угадано за {g['tries']} попыт.! Это <b>{n}</b>")
+    await _save(ctx, g)
+    await ctx.send(f"{n}: {'⬆️ больше' if n < g['secret'] else '⬇️ меньше'} (попытка {g['tries']})")
+
+
 @command("шашки", "море", section="games", help="(в разработке)")
 async def wip(ctx):
     await ctx.edit("🚧 Эта игра пока в разработке")
@@ -216,3 +276,7 @@ async def on_move(ctx, text: str):
         await _bulls_move(ctx, g, text)
     elif kind == "words":
         await _words_move(ctx, g, text)
+    elif kind == "hang":
+        await _hang_move(ctx, g, text)
+    elif kind == "guess":
+        await _guess_move(ctx, g, text)
