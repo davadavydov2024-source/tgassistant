@@ -9,7 +9,7 @@ from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
 
 from . import config, db, errlog, registry
 from .ctx import Ctx
-from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra, more, tools  # noqa: F401  (регистрация команд)
+from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra, more, tools, life  # noqa: F401  (регистрация команд)
 
 log = logging.getLogger(__name__)
 router = Router()

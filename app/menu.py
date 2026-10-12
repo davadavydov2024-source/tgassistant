@@ -20,7 +20,9 @@ router = Router()
 TIER_TEXT = {
     1: "✨ Анимации (.print .glit .love …)\n🎞 Медиа (.sticker .removebg .voice .krom …)\n💥 .spam .xaxa .bomb\n💤 .afk .later",
     2: "Всё из PREMIUM +\n🛡 Модерация (.mute .antimat .antispam …)\n👤 Профиль и авто (.panic .autoread .timeprofile …)",
+    3: "Сразу PREMIUM и VIP: все функции бота без ограничений тарифов",
 }
+PRODUCT = {1: "PREMIUM", 2: "VIP", 3: "КОМБО PREMIUM+VIP"}
 
 
 def _btn(text, data):
@@ -119,14 +121,17 @@ def connect_text(username: str) -> str:
 async def sub_text(uid) -> str:
     return (
         f"💳 <b>Тарифы</b>\n{await sub_line(uid)}\n\n"
+        f"🔥 <b>КОМБО: PREMIUM + VIP</b> — всего <b>{config.PRICES[3]}⭐</b> / {config.SUB_DAYS} дн. (выгодно!)\n{TIER_TEXT[3]}\n\n"
         f"⭐ <b>PREMIUM</b> — {config.PRICES[1]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[1]}\n\n"
         f"👑 <b>VIP</b> — {config.PRICES[2]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[2]}\n\n"
-        "<i>Бесплатно: основные команды, игры, серии, утилиты и сохранение удалённых сообщений. Есть промокод — /promo КОД.</i>"
+        "<i>Бесплатно: основные команды, игры, серии, утилиты и сохранение удалённых сообщений. Есть промокод — /promo КОД.\n"
+        "Подписки не сгорают: покупка продлевает текущую, а при переходе на тариф выше остаток дней сохраняется.</i>"
     )
 
 
 def sub_kb():
-    return back_kb([_btn(f"⭐ PREMIUM · {config.PRICES[1]}⭐", "pay:1"), _btn(f"👑 VIP · {config.PRICES[2]}⭐", "pay:2")])
+    return back_kb([_btn(f"🔥 КОМБО PREMIUM+VIP · {config.PRICES[3]}⭐", "pay:3")],
+                   [_btn(f"⭐ PREMIUM · {config.PRICES[1]}⭐", "pay:1"), _btn(f"👑 VIP · {config.PRICES[2]}⭐", "pay:2")])
 
 
 async def profile_text(uid, bot) -> str:
@@ -223,6 +228,8 @@ async def on_menu(cb: CallbackQuery, bot: Bot):
     if res is None:
         return await cb.answer()
     text, kb = res
+    if len(text) > 4000:
+        text = text[:3950].rsplit("\n", 1)[0] + "\n… (полный список: .help)"
     try:
         await cb.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
@@ -244,29 +251,42 @@ async def on_buy_page(cb: CallbackQuery, bot: Bot):
 async def on_pay(cb: CallbackQuery):
     if cb.from_user.id in db.BANNED:
         return await cb.answer("Вы заблокированы", show_alert=True)
-    tier = int(cb.data[4:])
+    kind = int(cb.data[4:])
+    if kind not in PRODUCT:
+        return await cb.answer()
     await cb.message.answer_invoice(
-        title=f"{TIERS[tier]} на {config.SUB_DAYS} дн.",
-        description=TIER_TEXT[tier].replace("\n", ", ")[:250],
-        payload=f"sub:{tier}",
+        title=f"{PRODUCT[kind]} на {config.SUB_DAYS} дн.",
+        description=TIER_TEXT[kind].replace("\n", ", ")[:250],
+        payload=f"sub:{kind}",
         currency="XTR",
-        prices=[LabeledPrice(label=TIERS[tier], amount=price(tier))],
+        prices=[LabeledPrice(label=PRODUCT[kind], amount=price(kind))],
     )
     await cb.answer()
 
 
 @router.pre_checkout_query()
 async def pre_checkout(q: PreCheckoutQuery):
+    if q.from_user.id in db.BANNED:
+        return await q.answer(ok=False, error_message="Вы заблокированы администратором")
     await q.answer(ok=True)
 
 
 @router.message(F.successful_payment)
-async def paid(m: Message):
+async def paid(m: Message, bot: Bot):
     p = m.successful_payment
-    tier = int(p.invoice_payload.split(":")[1])
-    await db.grant(m.from_user.id, tier, config.SUB_DAYS)
-    log.info("оплата: user=%s tier=%s charge=%s", m.from_user.id, tier, p.telegram_payment_charge_id)
-    await m.answer(f"🎉 Тариф <b>{TIERS[tier]}</b> активирован на {config.SUB_DAYS} дн.!\n{await sub_line(m.from_user.id)}")
+    uid, charge = m.from_user.id, p.telegram_payment_charge_id
+    if await db.fetchone("SELECT 1 FROM payments WHERE charge_id=?", (charge,)):
+        return  # повторная доставка того же платежа — второй раз не начисляем
+    kind = int(p.invoice_payload.split(":")[1])
+    tier = 2 if kind == 3 else kind  # комбо = VIP (он уже включает всё из PREMIUM)
+    await db.execute("INSERT INTO payments VALUES(?,?,?,?,?)", (charge, uid, p.invoice_payload, p.total_amount, time.time()))
+    res = await db.apply_sub(uid, tier, config.SUB_DAYS)
+    log.info("оплата: user=%s product=%s charge=%s", uid, kind, charge)
+    await m.answer(f"🎉 <b>{PRODUCT.get(kind, TIERS[res])}</b> активирован на {config.SUB_DAYS} дн.!\n{await sub_line(uid)}")
+    try:
+        await bot.send_message(config.ADMIN_ID, f"💰 Покупка: <code>{uid}</code> @{m.from_user.username or '—'} · {PRODUCT.get(kind)} · {p.total_amount}⭐", parse_mode="HTML")
+    except Exception:
+        pass
 
 
 # ---------- админка ----------
@@ -279,7 +299,7 @@ def _staff(m: Message) -> bool:
 
 
 def _tier_arg(s: str):
-    return {"0": 0, "free": 0, "1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2}.get(s.lower())
+    return {"0": 0, "free": 0, "1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "combo": 2, "bundle": 2, "all": 2}.get(s.lower())
 
 
 def _target(m: Message, a: list):
@@ -304,11 +324,16 @@ async def give(m: Message, bot: Bot):
         return await m.answer("Формат: <code>/give user_id premium|vip [дней]</code>\nили ответом на пересланное сообщение человека: <code>/give vip 30</code>")
     tier = _tier_arg(a[0])
     days = int(a[1]) if len(a) > 1 and a[1].isdigit() else config.SUB_DAYS
-    await db.grant(uid, tier, days)
-    await db.alog(m.from_user.id, f"выдал {TIERS[tier]} {days}д → {uid}")
-    await m.answer(f"✅ {uid}: {TIERS[tier]} на {days} дн.")
+    if tier == 0:
+        await db.revoke(uid)
+        await db.alog(m.from_user.id, f"снял подписку → {uid}")
+        return await m.answer(f"🗑 Подписка {uid} снята")
+    res = await db.apply_sub(uid, tier, days)
+    await db.alog(m.from_user.id, f"выдал {TIERS[tier]} {days}д → {uid} (итог {TIERS[res]})")
+    note = "" if res == tier else f"\nℹ️ У него активен {TIERS[res]} — продлил его на {days} дн., не понижая."
+    await m.answer(f"✅ {uid}: {TIERS[res]} +{days} дн.{note}")
     try:
-        await bot.send_message(uid, f"🎁 Вам выдан тариф <b>{TIERS[tier]}</b> на {days} дн.")
+        await bot.send_message(uid, f"🎁 Вам выдан тариф <b>{TIERS[res]}</b> на {days} дн.")
     except Exception:
         pass
 

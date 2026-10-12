@@ -34,6 +34,7 @@ async def main():
     dp.include_router(business.router)
     asyncio.create_task(profile.time_loop(bot))
     asyncio.create_task(utils.remind_loop(bot))
+    asyncio.create_task(botcmds.sub_loop(bot))
     me = await bot.me()
     user_cmds = [
         BotCommand(command="start", description="Главное меню"),

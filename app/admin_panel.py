@@ -22,7 +22,9 @@ from .registry import REG, TIERS
 log = logging.getLogger(__name__)
 router = Router()
 PENDING: dict[int, str] = {}
-TIER_MAP = {"1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2}
+TIER_MAP = {"1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "combo": 2, "bundle": 2, "all": 2}
+PRICE_MAP = {"1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "3": 3, "combo": 3, "bundle": 3, "all": 3}
+NAMES = {1: "PREMIUM", 2: "VIP", 3: "КОМБО PREMIUM+VIP"}
 PAGE = 15
 FILTERS = {"all": "Все", "paid": "💎 Платные", "banned": "🚫 Баны", "mods": "🛡 Мини"}
 LAST_FILTER: dict[int, str] = {}
@@ -34,21 +36,21 @@ SETTINGS = {  # имя -> (название, быстрые значения)
     "spam_cd": ("Перерыв спама, сек.", [0, 1200, 3600]),
     "sub_days": ("Длительность подписки, дн.", [30, 60, 90]),
 }
-PRICE_PRESETS = {1: [100, 150, 250], 2: [250, 350, 500]}
+PRICE_PRESETS = {1: [100, 150, 250], 2: [250, 350, 500], 3: [10, 50, 100]}
 
 ADMIN_HELP = (
     "👑 <b>Все команды админа</b>\n\n"
     "<b>Пользователи</b>: /users · <code>/find @ник|имя|ID</code> · <code>/user ID</code> · /top · "
     "<code>/ban ID [причина]</code> · <code>/unban ID</code> · /bans · <code>/msg ID текст</code>\n"
-    "<b>Подписки</b>: <code>/give ID premium|vip [дней]</code> · <code>/revoke ID</code> · /subs\n"
-    "В чате с человеком: <code>.premium 30</code> · <code>.vip 30</code> · <code>.revoke</code>\n"
+    "<b>Подписки</b>: <code>/give ID premium|vip|combo [дней]</code> · <code>/revoke ID</code> · /subs\n"
+    "В чате с человеком: <code>.premium 30</code> · <code>.vip 30</code> · <code>.combo 30</code> · <code>.revoke</code>\n"
     "<b>Промокоды</b>: <code>/newpromo КОД premium|vip ДНЕЙ ЛИМИТ</code> · /promos · <code>/delpromo КОД</code>\n"
     "<b>Команды</b>: <code>/disablecmd имя</code> · <code>/enablecmd имя</code> · /disabled · "
     "<code>/blockcmd ID имя</code> · <code>/unblockcmd ID имя</code>\n"
     "<b>Спам</b>: /spammers · <code>/stopspam ID|all</code>\n"
     "<b>Мини-админы</b>: <code>/addmod ID</code> · <code>/delmod ID</code> · /mods\n"
     "<b>Прочее</b>: <code>/broadcast текст</code> · <code>/maintenance on|off</code> · "
-    "<code>/setprice premium|vip звёзды</code> · <code>/set имя значение</code> · /export · /backup · /log · /stats"
+    "<code>/setprice premium|vip|combo звёзды</code> · <code>/set имя значение</code> · /payments · <code>/refund ID</code> · /export · /backup · /log · /stats"
 )
 STAFF_HELP = (
     "🛡 <b>Мини-админка</b>\n\n"
@@ -118,7 +120,8 @@ def _panel_kb(admin: bool) -> InlineKeyboardMarkup:
                  [_ab("📢 Рассылка", "bc"), _ab("⚙️ Настройки", "settings")],
                  [_ab("💰 Цены", "prices"), _ab("🔧 Команды", "cmds")],
                  [_ab("🛠 Техработы: ВКЛ" if db.STATE["maint"] else "🛠 Техработы: выкл", "maint"), _ab("📤 Экспорт", "export")],
-                 [_ab("💾 Бэкап БД", "backup"), _ab("📜 Лог", "log")]]
+                 [_ab("💾 Бэкап БД", "backup"), _ab("📜 Лог", "log")],
+                 [_ab("💳 Платежи", "pays")]]
     rows.append([_ab("🔄 Обновить", "panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -220,6 +223,7 @@ def _card_kb(uid: int, admin: bool, admin_id: int) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(inline_keyboard=[[b("🎁 PREMIUM 7д", "prem7"), b("🎁 PREMIUM 30д", "prem30")],
                                                  [b("👑 VIP 30д", "vip30"), b("👑 VIP 90д", "vip90")],
+                                                 [b("🔥 КОМБО PREMIUM+VIP 30д", "combo30")],
                                                  [b("🗑 Отобрать подписку", "rev")], back])
 
 
@@ -292,7 +296,7 @@ async def user_card(m: Message):
     await m.answer(await _card_text(uid), reply_markup=await _card_markup(uid, _admin(m), m.from_user.id))
 
 
-GRANTS = {"prem": (1, None), "vip": (2, None), "prem7": (1, 7), "prem30": (1, 30), "vip30": (2, 30), "vip90": (2, 90)}
+GRANTS = {"prem": (1, None), "vip": (2, None), "prem7": (1, 7), "prem30": (1, 30), "vip30": (2, 30), "vip90": (2, 90), "combo30": (2, 30)}
 
 
 @router.callback_query(F.data.startswith("u:"))
@@ -326,9 +330,9 @@ async def user_cb(cb: CallbackQuery, bot: Bot):
         elif act in GRANTS:
             tier, days = GRANTS[act]
             days = days or config.SUB_DAYS
-            await db.grant(uid, tier, days)
-            await db.alog(me, f"выдал {TIERS[tier]} {days}д → {uid}")
-            note = f"🎁 Вам выдан тариф <b>{TIERS[tier]}</b> на {days} дн."
+            res = await db.apply_sub(uid, tier, days)
+            await db.alog(me, f"выдал {TIERS[tier]} {days}д → {uid} (итог {TIERS[res]})")
+            note = f"🎁 Вам выдан тариф <b>{TIERS[res]}</b> на {days} дн."
         elif act == "rev":
             await db.revoke(uid)
             await db.alog(me, f"отобрал подписку → {uid}")
@@ -398,11 +402,11 @@ def _cmds_text() -> str:
 
 def _prices_view():
     kb = []
-    for t in (1, 2):
-        kb.append([_ab(f"{TIERS[t]}: {config.PRICES[t]}⭐", "noop")])
+    for t in (3, 1, 2):
+        kb.append([_ab(f"{NAMES[t]}: {config.PRICES[t]}⭐", "noop")])
         kb.append([_ab(("✅ " if config.PRICES[t] == v else "") + f"{v}⭐", f"price:{t}:{v}") for v in PRICE_PRESETS[t]])
-    return (f"💰 <b>Цены</b> ({config.SUB_DAYS} дн.)\nPREMIUM: {config.PRICES[1]}⭐ · VIP: {config.PRICES[2]}⭐\n\n"
-            "Свою цену: <code>/setprice premium 200</code>"), _back(*kb)
+    return (f"💰 <b>Цены</b> ({config.SUB_DAYS} дн.)\nКОМБО: {config.PRICES[3]}⭐ · PREMIUM: {config.PRICES[1]}⭐ · VIP: {config.PRICES[2]}⭐\n"
+            "Комбо выдаёт VIP (он включает всё из PREMIUM).\n\nСвою цену: <code>/setprice combo 10</code>, <code>/setprice premium 200</code>"), _back(*kb)
 
 
 def _settings_view():
@@ -422,6 +426,20 @@ async def _log_text() -> str:
         return "📜 Журнал пуст"
     return "📜 <b>Последние действия админов</b>\n" + "\n".join(
         f"{_fmt(r['ts'])} · <code>{r['admin_id']}</code> · {html.escape(r['text'])}" for r in rows)
+
+
+async def _pays_text() -> str:
+    rows = await db.fetchall("SELECT * FROM payments ORDER BY ts DESC LIMIT 15")
+    total = (await db.fetchone("SELECT COALESCE(SUM(stars),0) c FROM payments WHERE payload NOT LIKE '%:refunded'"))["c"]
+    if not rows:
+        return "💳 Платежей пока нет"
+    names = {"1": "PREMIUM", "2": "VIP", "3": "КОМБО"}
+    lines = [f"💳 <b>Платежи</b> · всего получено: <b>{total}⭐</b>"]
+    for r in rows:
+        kind = r["payload"].split(":")[1]
+        mark = " ↩️ возврат" if r["payload"].endswith(":refunded") else ""
+        lines.append(f"{_fmt(r['ts'])} · <code>{r['user_id']}</code> · {names.get(kind, kind)} · {r['stars']}⭐{mark}\n<code>{r['charge_id']}</code>")
+    return "\n".join(lines) + "\n\nВернуть звёзды и снять подписку: <code>/refund ID_платежа</code>"
 
 
 async def _export(msg: Message):
@@ -450,7 +468,7 @@ async def _backup(msg: Message):
 
 
 # ---------- кнопки панели ----------
-ADMIN_ONLY = {"bans", "promos", "bc", "cmds", "maint", "prices", "export", "backup", "log", "settings"}
+ADMIN_ONLY = {"bans", "promos", "bc", "cmds", "maint", "prices", "export", "backup", "log", "settings", "pays"}
 
 
 @router.callback_query(F.data.startswith("adm:"))
@@ -502,7 +520,7 @@ async def admin_cb(cb: CallbackQuery):
         _, t, val = key.split(":")
         config.PRICES[int(t)] = int(val)
         await db.set_s(0, f"price_{t}", val)
-        await db.alog(uid, f"цена {TIERS[int(t)]} = {val}⭐")
+        await db.alog(uid, f"цена {NAMES[int(t)]} = {val}⭐")
         text, kb = _prices_view()
         await _edit(cb, text, kb)
         return await cb.answer("Сохранено")
@@ -527,6 +545,8 @@ async def admin_cb(cb: CallbackQuery):
         text, kb = _settings_view()
     elif key == "log":
         text = await _log_text()
+    elif key == "pays":
+        text = await _pays_text()
     elif key == "find":
         text = "🔎 <b>Поиск</b>\nОтправьте <code>/find @username</code>, часть имени или ID — покажу список, номер откроет пользователя."
     elif key == "bc":
@@ -668,13 +688,13 @@ async def setprice(m: Message):
     if not _admin(m):
         return
     a = _args(m)
-    if len(a) < 2 or a[0].lower() not in TIER_MAP or not a[1].isdigit() or int(a[1]) < 1:
-        return await m.answer("Формат: <code>/setprice premium 200</code>")
-    t = TIER_MAP[a[0].lower()]
+    if len(a) < 2 or a[0].lower() not in PRICE_MAP or not a[1].isdigit() or int(a[1]) < 1:
+        return await m.answer("Формат: <code>/setprice premium|vip|combo 200</code>")
+    t = PRICE_MAP[a[0].lower()]
     config.PRICES[t] = int(a[1])
     await db.set_s(0, f"price_{t}", a[1])
-    await db.alog(m.from_user.id, f"цена {TIERS[t]} = {a[1]}⭐")
-    await m.answer(f"💰 {TIERS[t]}: {a[1]}⭐")
+    await db.alog(m.from_user.id, f"цена {NAMES[t]} = {a[1]}⭐")
+    await m.answer(f"💰 {NAMES[t]}: {a[1]}⭐")
 
 
 @router.message(Command("set"))
@@ -688,6 +708,36 @@ async def set_cfg(m: Message):
     await db.set_s(0, f"cfg_{a[0]}", a[1])
     await db.alog(m.from_user.id, f"настройка {a[0]} = {a[1]}")
     await m.answer(f"⚙️ {SETTINGS[a[0]][0]}: <b>{a[1]}</b>")
+
+
+@router.message(Command("payments"))
+async def payments(m: Message):
+    if _admin(m):
+        await m.answer(await _pays_text())
+
+
+@router.message(Command("refund"))
+async def refund(m: Message, command: CommandObject, bot: Bot):
+    if not _admin(m):
+        return
+    charge = (command.args or "").strip()
+    row = await db.fetchone("SELECT * FROM payments WHERE charge_id=?", (charge,)) if charge else None
+    if not row:
+        return await m.answer("Платёж не найден. Формат: <code>/refund ID_платежа</code>, список: /payments")
+    if row["payload"].endswith(":refunded"):
+        return await m.answer("Этот платёж уже возвращён")
+    try:
+        await bot.refund_star_payment(user_id=row["user_id"], telegram_payment_charge_id=charge)
+    except Exception as e:
+        return await m.answer(f"⚠️ Возврат не удался: {html.escape(str(e))}")
+    await db.execute("UPDATE payments SET payload = payload || ':refunded' WHERE charge_id=?", (charge,))
+    await db.revoke(row["user_id"])
+    await db.alog(m.from_user.id, f"возврат {row['stars']}⭐ → {row['user_id']}, подписка снята")
+    await m.answer(f"↩️ Возвращено {row['stars']}⭐, подписка пользователя {row['user_id']} снята")
+    try:
+        await bot.send_message(row["user_id"], f"↩️ Платёж возвращён ({row['stars']}⭐), подписка отключена.")
+    except Exception:
+        pass
 
 
 @router.message(Command("log"))

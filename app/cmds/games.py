@@ -251,6 +251,31 @@ async def _guess_move(ctx, g, text):
     await ctx.send(f"{n}: {'⬆️ больше' if n < g['secret'] else '⬇️ меньше'} (попытка {g['tries']})")
 
 
+# ---------- устный счёт ----------
+def _math_q():
+    a, b = random.randint(2, 20), random.randint(2, 12)
+    op = random.choice("+-*")
+    return f"{a} {'×' if op == '*' else op} {b}", eval(f"{a}{op}{b}")  # a, b — только наши числа
+
+
+@command("матем", "math", section="games", help="устный счёт: решайте примеры, пишите ответ числом")
+async def mathquiz(ctx):
+    q, ans = _math_q()
+    await _save(ctx, {"kind": "math", "answer": ans, "score": 0})
+    await ctx.edit(f"🧮 <b>Устный счёт</b>\nПишите ответ числом. Остановить: <code>.стопигра</code>\n\n<b>{q} = ?</b>")
+
+
+async def _math_move(ctx, g, text):
+    if not re.fullmatch(r"-?\d{1,6}", text):
+        return
+    if int(text) == g["answer"]:
+        g["score"] += 1
+        q, g["answer"] = _math_q()
+        await _save(ctx, g)
+        return await ctx.send(f"✅ Верно! Счёт: {g['score']}\n\n<b>{q} = ?</b>")
+    await ctx.send("❌ Неверно, попробуйте ещё раз")
+
+
 @command("шашки", "море", section="games", help="(в разработке)")
 async def wip(ctx):
     await ctx.edit("🚧 Эта игра пока в разработке")
@@ -280,3 +305,5 @@ async def on_move(ctx, text: str):
         await _hang_move(ctx, g, text)
     elif kind == "guess":
         await _guess_move(ctx, g, text)
+    elif kind == "math":
+        await _math_move(ctx, g, text)

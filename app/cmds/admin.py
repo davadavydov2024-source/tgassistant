@@ -4,7 +4,7 @@ from datetime import datetime
 from .. import config, db
 from ..registry import command, TIERS
 
-TIER_MAP = {"0": 0, "free": 0, "1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2}
+TIER_MAP = {"0": 0, "free": 0, "1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "combo": 2, "bundle": 2, "all": 2}
 
 
 def _uid(ctx, a):
@@ -22,10 +22,14 @@ async def _dm(ctx, uid, text):
 
 
 async def _gift(ctx, uid, tier, days):
-    await db.grant(uid, tier, days)
-    await db.alog(ctx.owner_id, f"выдал {TIERS[tier]} {days}д → {uid} (в чате)")
-    await ctx.edit(f"🎁 <code>{uid}</code>: <b>{TIERS[tier]}</b> на {days} дн.")
-    await _dm(ctx, uid, f"🎁 Вам выдан тариф <b>{TIERS[tier]}</b> на {days} дн.")
+    if tier == 0:
+        await db.revoke(uid)
+        return await ctx.edit(f"🗑 Подписка <code>{uid}</code> снята")
+    res = await db.apply_sub(uid, tier, days)
+    await db.alog(ctx.owner_id, f"выдал {TIERS[tier]} {days}д → {uid} (итог {TIERS[res]}, в чате)")
+    note = "" if res == tier else f" (у него активен {TIERS[res]} — продлён без понижения)"
+    await ctx.edit(f"🎁 <code>{uid}</code>: <b>{TIERS[res]}</b> +{days} дн.{note}")
+    await _dm(ctx, uid, f"🎁 Вам выдан тариф <b>{TIERS[res]}</b> на {days} дн.")
 
 
 @command("give", section="manage", hidden=True, help="(админ) подарить подписку")
@@ -46,6 +50,14 @@ async def premium(ctx):
         return
     uid, a = _uid(ctx, ctx.args.split())
     await _gift(ctx, uid, 1, int(a[0]) if a and a[0].isdigit() else config.SUB_DAYS)
+
+
+@command("combo", section="manage", hidden=True, help="(админ) выдать КОМБО PREMIUM+VIP собеседнику")
+async def combo(ctx):
+    if not ctx.is_admin:
+        return
+    uid, a = _uid(ctx, ctx.args.split())
+    await _gift(ctx, uid, 2, int(a[0]) if a and a[0].isdigit() else config.SUB_DAYS)
 
 
 @command("vip", section="manage", hidden=True, help="(админ) выдать VIP собеседнику")

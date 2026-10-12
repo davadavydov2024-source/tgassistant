@@ -1,5 +1,9 @@
 """Пользовательские команды в личке с ботом: промокоды и реферальная ссылка."""
+import asyncio
 import html
+import logging
+import time
+from datetime import datetime
 
 from aiogram import Bot, Router
 from aiogram.filters import Command, CommandObject
@@ -39,3 +43,32 @@ async def ref(m: Message, bot: Bot):
         f"👥 <b>Пригласи друга</b>\nЗа каждого друга, который подключит бота, вы получаете +{config.REF_DAYS} дн. PREMIUM.\n\n"
         f"Ваша ссылка:\n<code>https://t.me/{me.username}?start=ref_{uid}</code>\n\nПриглашено (перешли по ссылке): {n}"
     )
+
+
+log = logging.getLogger(__name__)
+
+
+async def sub_loop(bot: Bot):
+    """Предупреждает за сутки до окончания подписки и сообщает, когда она закончилась."""
+    while True:
+        try:
+            now = time.time()
+            for r in await db.fetchall("SELECT * FROM subs WHERE until > ? AND until <= ? AND COALESCE(notified,0)=0", (now, now + 86400)):
+                await db.execute("UPDATE subs SET notified=1 WHERE user_id=?", (r["user_id"],))
+                if r["user_id"] in db.BANNED or db.is_staff(r["user_id"]):
+                    continue
+                try:
+                    await bot.send_message(r["user_id"], f"⏳ Ваш тариф <b>{TIERS[r['tier']]}</b> заканчивается {datetime.fromtimestamp(r['until'], config.MSK):%d.%m в %H:%M}. Продлить: /tariffs")
+                except Exception:
+                    pass
+            for r in await db.fetchall("SELECT * FROM subs WHERE until <= ? AND COALESCE(notified,0) < 2", (now,)):
+                await db.execute("UPDATE subs SET notified=2 WHERE user_id=?", (r["user_id"],))
+                if r["user_id"] in db.BANNED or db.is_staff(r["user_id"]):
+                    continue
+                try:
+                    await bot.send_message(r["user_id"], f"⌛ Тариф <b>{TIERS[r['tier']]}</b> закончился. Бесплатные функции остаются. Продлить: /tariffs")
+                except Exception:
+                    pass
+        except Exception:
+            log.exception("sub_loop")
+        await asyncio.sleep(1800)

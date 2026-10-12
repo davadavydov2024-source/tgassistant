@@ -15,7 +15,8 @@ STATE = {"maint": False}  # режим техработ
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS connections(conn_id TEXT PRIMARY KEY, user_id INTEGER, first_name TEXT, last_name TEXT, ts REAL, username TEXT DEFAULT '');
-CREATE TABLE IF NOT EXISTS subs(user_id INTEGER PRIMARY KEY, tier INTEGER, until REAL);
+CREATE TABLE IF NOT EXISTS subs(user_id INTEGER PRIMARY KEY, tier INTEGER, until REAL, notified INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS payments(charge_id TEXT PRIMARY KEY, user_id INTEGER, payload TEXT, stars INTEGER, ts REAL);
 CREATE TABLE IF NOT EXISTS settings(user_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(user_id, key));
 CREATE TABLE IF NOT EXISTS chatset(conn_id TEXT, chat_id INTEGER, key TEXT, value TEXT, PRIMARY KEY(conn_id, chat_id, key));
 CREATE TABLE IF NOT EXISTS msgs(conn_id TEXT, chat_id INTEGER, message_id INTEGER, from_id INTEGER, ts REAL);
@@ -38,13 +39,15 @@ async def init(path: str):
     await _db.executescript(SCHEMA)
     for sql in ("ALTER TABLE connections ADD COLUMN username TEXT DEFAULT ''",
                 "ALTER TABLE saved ADD COLUMN username TEXT DEFAULT ''",
-                "ALTER TABLE saved ADD COLUMN hist TEXT DEFAULT '[]'"):
+                "ALTER TABLE saved ADD COLUMN hist TEXT DEFAULT '[]'",
+                "ALTER TABLE subs ADD COLUMN notified INTEGER DEFAULT 0"):
         try:  # миграция старых баз: колонка уже есть — это нормально
             await _db.execute(sql)
         except Exception:
             pass
     await _db.execute("DELETE FROM msgs WHERE ts < ?", (time.time() - 30 * 86400,))
     await _db.execute("DELETE FROM saved WHERE ts < ?", (time.time() - 7 * 86400,))
+    await _db.execute("UPDATE subs SET notified=2 WHERE until <= ? AND COALESCE(notified,0)=0", (time.time(),))  # старые истёкшие не трогаем
     await _db.commit()
     MODS.clear()
     MODS.update(r["user_id"] for r in await fetchall("SELECT user_id FROM mods"))
@@ -62,7 +65,7 @@ async def load_global():
         v = await get_s(0, f"cfg_{name}")
         if v and v.lstrip("-").isdigit():
             setattr(config, attr, int(v))
-    for t in (1, 2):
+    for t in (1, 2, 3):
         v = await get_s(0, f"price_{t}")
         if v and v.isdigit():
             config.PRICES[t] = int(v)
@@ -105,14 +108,21 @@ async def touch_seen(user_id: int):
     await set_s(user_id, "last_seen", time.time())
 
 
-async def apply_sub(user_id: int, tier: int, days: int):
-    """Выдать/продлить, не понижая более высокий активный тариф."""
+async def apply_sub(user_id: int, tier: int, days: int) -> int:
+    """Выдать или продлить подписку и вернуть итоговый тариф.
+    Более высокий активный тариф не понижается (его продлевают); при апгрейде остаток прежних дней не сгорает."""
+    now = time.time()
     row = await get_sub(user_id)
-    if row and row["until"] > time.time() and row["tier"] > tier:
-        await execute("UPDATE subs SET until=until+? WHERE user_id=?", (days * 86400, user_id))
-    else:
-        await grant(user_id, tier, days)
-
+    active = bool(row and row["until"] > now)
+    if active and row["tier"] > tier:
+        await execute("UPDATE subs SET until=until+?, notified=0 WHERE user_id=?", (days * 86400, user_id))
+        return row["tier"]
+    if active and row["tier"] < tier:
+        left = row["until"] - now
+        await execute("INSERT OR REPLACE INTO subs(user_id,tier,until,notified) VALUES(?,?,?,0)", (user_id, tier, now + days * 86400 + left))
+        return tier
+    await grant(user_id, tier, days)
+    return tier
 
 def is_staff(user_id: int) -> bool:
     return user_id == config.ADMIN_ID or user_id in MODS
@@ -182,7 +192,7 @@ async def grant(user_id, tier, days):
     base = time.time()
     if row and row["tier"] == tier and row["until"] > base:
         base = row["until"]
-    await execute("INSERT OR REPLACE INTO subs VALUES(?,?,?)", (user_id, tier, base + days * 86400))
+    await execute("INSERT OR REPLACE INTO subs(user_id,tier,until,notified) VALUES(?,?,?,0)", (user_id, tier, base + days * 86400))
 
 
 async def revoke(user_id):
