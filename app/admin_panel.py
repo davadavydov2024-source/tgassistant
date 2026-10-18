@@ -51,7 +51,7 @@ ADMIN_HELP = (
     "<b>Спам</b>: /spammers · <code>/stopspam ID|all</code>\n"
     "<b>Мини-админы</b>: <code>/addmod ID</code> · <code>/delmod ID</code> · /mods\n"
     "<b>Прочее</b>: <code>/broadcast текст</code> · <code>/maintenance on|off</code> · "
-    "<code>/setprice premium|vip|combo звёзды</code> · <code>/set имя значение</code> · /payments · <code>/refund ID</code> · /export · /backup · /log · /stats"
+    "<code>/setprice premium|vip|combo звёзды</code> · <code>/set имя значение</code> · /payments · <code>/refund ID</code> · /export · /backup · /log · /stats · /musictest"
 )
 STAFF_HELP = (
     "🛡 <b>Мини-админка</b>\n\n"

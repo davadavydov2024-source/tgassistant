@@ -9,7 +9,7 @@ from aiogram.enums import ParseMode
 
 from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 
-from app import config, db, menu, business, admin_panel, botcmds, errlog
+from app import config, db, menu, business, admin_panel, botcmds, errlog, music_inline
 from app.cmds import profile, utils
 
 
@@ -30,6 +30,7 @@ async def main():
     dp.errors.register(on_error)
     dp.include_router(admin_panel.router)
     dp.include_router(botcmds.router)
+    dp.include_router(music_inline.router)
     dp.include_router(menu.router)
     dp.include_router(business.router)
     asyncio.create_task(profile.time_loop(bot))

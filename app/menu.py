@@ -65,7 +65,8 @@ async def home_text(uid, bot) -> str:
         "<b>Ассистент для личных чатов</b> 👀\n<i>Максимум возможностей — минимум лишних действий</i>\n\n"
         f"{status}\n{await sub_line(uid)}\n\n"
         "<blockquote>Пишите команды с точки в любом личном чате: <code>.help</code>, <code>.love</code>, <code>.sticker</code>, "
-        "<code>.calc</code> … Удалённые и изменённые сообщения собеседников приходят сюда.</blockquote>"
+        "<code>.calc</code> … Удалённые и изменённые сообщения собеседников приходят сюда.\n"
+        f"🎧 Музыка: в любом чате наберите <code>@{(await bot.me()).username} название песни</code> или команду <code>.music</code>.</blockquote>"
     )
 
 
