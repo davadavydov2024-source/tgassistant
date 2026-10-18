@@ -1,10 +1,7 @@
-import time
 from datetime import datetime
 
-from .. import config, db
-from ..registry import command, TIERS
-
-TIER_MAP = {"0": 0, "free": 0, "1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "combo": 2, "bundle": 2, "all": 2}
+from .. import config, db, subtools
+from ..registry import command
 
 
 def _uid(ctx, a):
@@ -21,27 +18,32 @@ async def _dm(ctx, uid, text):
         pass
 
 
-async def _gift(ctx, uid, tier, days):
-    if tier == 0:
-        await db.revoke(uid)
-        return await ctx.edit(f"🗑 Подписка <code>{uid}</code> снята")
-    res = await db.apply_sub(uid, tier, days)
-    await db.alog(ctx.owner_id, f"выдал {TIERS[tier]} {days}д → {uid} (итог {TIERS[res]}, в чате)")
-    note = "" if res == tier else f" (у него активен {TIERS[res]} — продлён без понижения)"
-    await ctx.edit(f"🎁 <code>{uid}</code>: <b>{TIERS[res]}</b> +{days} дн.{note}")
-    await _dm(ctx, uid, f"🎁 Вам выдан тариф <b>{TIERS[res]}</b> на {days} дн.")
+async def _gift(ctx, uid, items):
+    await db.grant_many(uid, items)
+    await db.alog(ctx.owner_id, f"выдал {subtools.fmt_items(items)} → {uid} (в чате)")
+    now = await subtools.describe(uid)
+    await ctx.edit(f"🎁 <code>{uid}</code>: выдано {subtools.fmt_items(items)}\nСейчас: {now}")
+    await _dm(ctx, uid, f"🎁 Вам выданы подписки: {subtools.fmt_items(items)}\n{now}")
 
 
-@command("give", section="manage", hidden=True, help="(админ) подарить подписку")
+def _days(a):
+    return int(a[0]) if a and a[0].isdigit() and 0 < int(a[0]) <= 3650 else config.SUB_DAYS
+
+
+@command("give", section="manage", hidden=True, help="(админ) подарить подписки")
 async def give(ctx):
     if not ctx.is_admin:
         return
     uid, a = _uid(ctx, ctx.args.split())
-    tier = TIER_MAP.get(a[0].lower()) if a else None
-    if tier is None:
-        return await ctx.edit("Формат: <code>.give premium|vip [дней]</code> (в чате с человеком)\nили <code>.give user_id vip 30</code>")
-    days = int(a[1]) if len(a) > 1 and a[1].isdigit() else config.SUB_DAYS
-    await _gift(ctx, uid, tier, days)
+    if a and a[0].lower() in subtools.FREE_WORDS:
+        await db.revoke(uid)
+        await db.alog(ctx.owner_id, f"снял подписки → {uid} (в чате)")
+        return await ctx.edit(f"🗑 Подписки <code>{uid}</code> сняты")
+    items = subtools.parse_grants(a) if a else None
+    if not items:
+        return await ctx.edit("Формат: <code>.give premium|vip|both [дней]</code> (в чате с человеком)\n"
+                              "Две сразу с разным сроком: <code>.give premium 30 vip 60</code>\nили с ID: <code>.give 123456789 both 30</code>")
+    await _gift(ctx, uid, items)
 
 
 @command("premium", section="manage", hidden=True, help="(админ) выдать PREMIUM собеседнику")
@@ -49,15 +51,7 @@ async def premium(ctx):
     if not ctx.is_admin:
         return
     uid, a = _uid(ctx, ctx.args.split())
-    await _gift(ctx, uid, 1, int(a[0]) if a and a[0].isdigit() else config.SUB_DAYS)
-
-
-@command("combo", section="manage", hidden=True, help="(админ) выдать КОМБО PREMIUM+VIP собеседнику")
-async def combo(ctx):
-    if not ctx.is_admin:
-        return
-    uid, a = _uid(ctx, ctx.args.split())
-    await _gift(ctx, uid, 2, int(a[0]) if a and a[0].isdigit() else config.SUB_DAYS)
+    await _gift(ctx, uid, [(1, _days(a))])
 
 
 @command("vip", section="manage", hidden=True, help="(админ) выдать VIP собеседнику")
@@ -65,17 +59,29 @@ async def vip(ctx):
     if not ctx.is_admin:
         return
     uid, a = _uid(ctx, ctx.args.split())
-    await _gift(ctx, uid, 2, int(a[0]) if a and a[0].isdigit() else config.SUB_DAYS)
+    await _gift(ctx, uid, [(2, _days(a))])
 
 
-@command("revoke", section="manage", hidden=True, help="(админ) снять подписку")
+@command("both", "combo", section="manage", hidden=True, help="(админ) выдать обе подписки сразу: PREMIUM и VIP")
+async def both(ctx):
+    if not ctx.is_admin:
+        return
+    uid, a = _uid(ctx, ctx.args.split())
+    d = _days(a)
+    await _gift(ctx, uid, [(1, d), (2, d)])
+
+
+@command("revoke", section="manage", hidden=True, help="(админ) снять подписки")
 async def revoke(ctx):
     if not ctx.is_admin:
         return
-    uid, _ = _uid(ctx, ctx.args.split())
-    await db.revoke(uid)
-    await db.alog(ctx.owner_id, f"снял подписку → {uid} (в чате)")
-    await ctx.edit(f"🗑 Подписка <code>{uid}</code> снята")
+    uid, a = _uid(ctx, ctx.args.split())
+    tier = subtools.revoke_tier(a[0] if a else "")
+    if tier is False:
+        return await ctx.edit("Формат: <code>.revoke [premium|vip]</code> — без тарифа снимает всё")
+    await db.revoke(uid, tier)
+    await db.alog(ctx.owner_id, f"снял {subtools.NAME.get(tier, 'все подписки')} → {uid} (в чате)")
+    await ctx.edit(f"🗑 <code>{uid}</code>: снято {subtools.NAME.get(tier, 'всё')}. Осталось: {await subtools.describe(uid)}")
 
 
 @command("addmod", section="manage", hidden=True, help="(админ) назначить мини-админа")
@@ -110,8 +116,9 @@ async def mods(ctx):
 async def subs(ctx):
     if not ctx.is_staff:
         return
-    rows = await db.fetchall("SELECT * FROM subs WHERE until > ? ORDER BY until DESC", (time.time(),))
+    rows = await db.subs_overview()
     if not rows:
         return await ctx.edit("Активных подписок нет")
     await ctx.edit("<b>Подписки</b>\n" + "\n".join(
-        f"<code>{r['user_id']}</code> — {TIERS[r['tier']]} до {datetime.fromtimestamp(r['until'], config.MSK):%d.%m.%Y}" for r in rows[:40]))
+        f"<code>{uid}</code> — " + " · ".join(f"{subtools.NAME[t]} до {datetime.fromtimestamp(u, config.MSK):%d.%m}" for t, u in sorted(tiers.items()))
+        for uid, tiers in rows[:40]))

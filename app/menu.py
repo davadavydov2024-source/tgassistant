@@ -1,5 +1,6 @@
 import html
 import logging
+import secrets
 import time
 from datetime import datetime
 
@@ -10,7 +11,7 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery,
 )
 
-from . import config, db
+from . import config, db, subtools
 from .registry import CMDS, SECTIONS, TIERS, section_text
 from .cmds import anim, saver
 
@@ -43,15 +44,14 @@ def price(tier):
 
 
 async def sub_line(uid) -> str:
-    t = await db.get_tier(uid)
     if uid == config.ADMIN_ID:
         return "💎 Тариф: <b>VIP</b> (админ)"
     if uid in db.MODS:
         return "💎 Тариф: <b>VIP</b> (мини-админ)"
-    row = await db.get_sub(uid)
-    if t and row:
-        return f"💎 Тариф: <b>{TIERS[t]}</b> до {datetime.fromtimestamp(row['until'], config.MSK):%d.%m.%Y}"
-    return "💎 Тариф: <b>FREE</b>"
+    act = await db.active_subs(uid)
+    if not act:
+        return "💎 Тариф: <b>FREE</b>"
+    return "💎 Подписки: " + " · ".join(f"<b>{subtools.NAME[t]}</b> до {datetime.fromtimestamp(u, config.MSK):%d.%m.%Y}" for t, u in sorted(act.items()))
 
 
 async def _connected(uid) -> int:
@@ -121,17 +121,25 @@ def connect_text(username: str) -> str:
 async def sub_text(uid) -> str:
     return (
         f"💳 <b>Тарифы</b>\n{await sub_line(uid)}\n\n"
-        f"🔥 <b>КОМБО: PREMIUM + VIP</b> — всего <b>{config.PRICES[3]}⭐</b> / {config.SUB_DAYS} дн. (выгодно!)\n{TIER_TEXT[3]}\n\n"
+        f"🔥 <b>КОМБО: PREMIUM + VIP сразу</b> — всего <b>{config.PRICES[3]}⭐</b> за {config.SUB_DAYS} дн. каждой (выгодно!)\n{TIER_TEXT[3]}\n\n"
         f"⭐ <b>PREMIUM</b> — {config.PRICES[1]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[1]}\n\n"
         f"👑 <b>VIP</b> — {config.PRICES[2]}⭐ / {config.SUB_DAYS} дн.\n{TIER_TEXT[2]}\n\n"
-        "<i>Бесплатно: основные команды, игры, серии, утилиты и сохранение удалённых сообщений. Есть промокод — /promo КОД.\n"
-        "Подписки не сгорают: покупка продлевает текущую, а при переходе на тариф выше остаток дней сохраняется.</i>"
+        "<i>PREMIUM и VIP — независимые подписки: можно держать обе, у каждой свой срок. Действуют функции самой высокой из активных. "
+        "Повторная покупка продлевает подписку. Бесплатно: основные команды, игры, серии, утилиты и сохранение удалённых сообщений. "
+        "Есть промокод — /promo КОД.</i>"
     )
 
 
 def sub_kb():
     return back_kb([_btn(f"🔥 КОМБО PREMIUM+VIP · {config.PRICES[3]}⭐", "pay:3")],
-                   [_btn(f"⭐ PREMIUM · {config.PRICES[1]}⭐", "pay:1"), _btn(f"👑 VIP · {config.PRICES[2]}⭐", "pay:2")])
+                   [_btn(f"⭐ PREMIUM · {config.PRICES[1]}⭐", "pay:1"), _btn(f"👑 VIP · {config.PRICES[2]}⭐", "pay:2")],
+                   [_btn("🎁 Подарить подписку другу", "m:gift")])
+
+
+def gift_kb():
+    return back_kb([_btn(f"🎁 КОМБО другу · {config.PRICES[3]}⭐", "pay:g3")],
+                   [_btn(f"🎁 PREMIUM · {config.PRICES[1]}⭐", "pay:g1"), _btn(f"🎁 VIP · {config.PRICES[2]}⭐", "pay:g2")],
+                   [_btn("⬅️ К тарифам", "m:sub")])
 
 
 async def profile_text(uid, bot) -> str:
@@ -160,6 +168,9 @@ async def page(key: str, uid: int, bot):
         return connect_text((await bot.me()).username), back_kb([_btn("🩺 Проверить подключение", "m:diag")])
     if key == "sub":
         return await sub_text(uid), sub_kb()
+    if key == "gift":
+        return ("🎁 <b>Подарить подписку другу</b>\nОплатите подарок — бот пришлёт вам <b>код</b>. Передайте его другу: он отправит боту "
+                f"<code>/promo КОД</code> и получит подписку на {config.SUB_DAYS} дн. Код одноразовый."), gift_kb()
     if key == "profile":
         return await profile_text(uid, bot), back_kb([_btn("👥 Пригласить друга", "m:ref")])
     if key == "promo":
@@ -251,13 +262,15 @@ async def on_buy_page(cb: CallbackQuery, bot: Bot):
 async def on_pay(cb: CallbackQuery):
     if cb.from_user.id in db.BANNED:
         return await cb.answer("Вы заблокированы", show_alert=True)
-    kind = int(cb.data[4:])
+    raw = cb.data[4:]
+    gift = raw.startswith("g")
+    kind = int(raw[1:] if gift else raw) if (raw[1:] if gift else raw).isdigit() else 0
     if kind not in PRODUCT:
         return await cb.answer()
     await cb.message.answer_invoice(
-        title=f"{PRODUCT[kind]} на {config.SUB_DAYS} дн.",
-        description=TIER_TEXT[kind].replace("\n", ", ")[:250],
-        payload=f"sub:{kind}",
+        title=("Подарок: " if gift else "") + f"{PRODUCT[kind]} на {config.SUB_DAYS} дн.",
+        description=("Бот пришлёт код, который можно подарить другу. " if gift else "") + TIER_TEXT[kind].replace("\n", ", ")[:200],
+        payload=f"{'gift' if gift else 'sub'}:{kind}",
         currency="XTR",
         prices=[LabeledPrice(label=PRODUCT[kind], amount=price(kind))],
     )
@@ -271,20 +284,34 @@ async def pre_checkout(q: PreCheckoutQuery):
     await q.answer(ok=True)
 
 
+def _items(kind: int, days: int):
+    return [(1, days), (2, days)] if kind == 3 else [(kind, days)]
+
+
 @router.message(F.successful_payment)
 async def paid(m: Message, bot: Bot):
     p = m.successful_payment
     uid, charge = m.from_user.id, p.telegram_payment_charge_id
     if await db.fetchone("SELECT 1 FROM payments WHERE charge_id=?", (charge,)):
         return  # повторная доставка того же платежа — второй раз не начисляем
-    kind = int(p.invoice_payload.split(":")[1])
-    tier = 2 if kind == 3 else kind  # комбо = VIP (он уже включает всё из PREMIUM)
-    await db.execute("INSERT INTO payments VALUES(?,?,?,?,?)", (charge, uid, p.invoice_payload, p.total_amount, time.time()))
-    res = await db.apply_sub(uid, tier, config.SUB_DAYS)
-    log.info("оплата: user=%s product=%s charge=%s", uid, kind, charge)
-    await m.answer(f"🎉 <b>{PRODUCT.get(kind, TIERS[res])}</b> активирован на {config.SUB_DAYS} дн.!\n{await sub_line(uid)}")
+    prefix, _, num = p.invoice_payload.partition(":")
+    kind, days = int(num), config.SUB_DAYS
+    payload = p.invoice_payload
+    code = None
+    if prefix == "gift":
+        code = "GIFT-" + "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(8))
+        await db.execute("INSERT INTO promos VALUES(?,?,?,1)", (code, kind, days))
+        payload += f":{code}"
+    await db.execute("INSERT INTO payments(charge_id,user_id,payload,stars,ts,days) VALUES(?,?,?,?,?,?)", (charge, uid, payload, p.total_amount, time.time(), days))
+    log.info("оплата: user=%s payload=%s charge=%s", uid, payload, charge)
+    if code:
+        await m.answer(f"🎁 <b>Подарок готов:</b> {PRODUCT[kind]} на {days} дн.\nКод для друга: <code>{code}</code>\nОн отправляет боту <code>/promo {code}</code>. Код одноразовый.")
+    else:
+        await db.grant_many(uid, _items(kind, days))
+        what = "КОМБО: PREMIUM и VIP сразу" if kind == 3 else PRODUCT[kind]
+        await m.answer(f"🎉 <b>{what}</b> активировано на {days} дн.!\n{await sub_line(uid)}")
     try:
-        await bot.send_message(config.ADMIN_ID, f"💰 Покупка: <code>{uid}</code> @{m.from_user.username or '—'} · {PRODUCT.get(kind)} · {p.total_amount}⭐", parse_mode="HTML")
+        await bot.send_message(config.ADMIN_ID, f"💰 {'Подарок' if code else 'Покупка'}: <code>{uid}</code> @{m.from_user.username or '—'} · {PRODUCT.get(kind)} · {p.total_amount}⭐", parse_mode="HTML")
     except Exception:
         pass
 
@@ -320,20 +347,24 @@ async def give(m: Message, bot: Bot):
     if not _admin(m):
         return
     uid, a = _target(m, (m.text or "").split()[1:])
-    if uid is None or not a or _tier_arg(a[0]) is None:
-        return await m.answer("Формат: <code>/give user_id premium|vip [дней]</code>\nили ответом на пересланное сообщение человека: <code>/give vip 30</code>")
-    tier = _tier_arg(a[0])
-    days = int(a[1]) if len(a) > 1 and a[1].isdigit() else config.SUB_DAYS
-    if tier == 0:
+    usage = ("Формат: <code>/give ID premium|vip|both [дней]</code>\n"
+             "Две сразу с разным сроком: <code>/give ID premium 30 vip 60</code>\n"
+             "Ответом на пересланное сообщение: <code>/give both 30</code>\nСнять: <code>/give ID free</code>")
+    if uid is None or not a:
+        return await m.answer(usage)
+    if a[0].lower() in subtools.FREE_WORDS:
         await db.revoke(uid)
-        await db.alog(m.from_user.id, f"снял подписку → {uid}")
-        return await m.answer(f"🗑 Подписка {uid} снята")
-    res = await db.apply_sub(uid, tier, days)
-    await db.alog(m.from_user.id, f"выдал {TIERS[tier]} {days}д → {uid} (итог {TIERS[res]})")
-    note = "" if res == tier else f"\nℹ️ У него активен {TIERS[res]} — продлил его на {days} дн., не понижая."
-    await m.answer(f"✅ {uid}: {TIERS[res]} +{days} дн.{note}")
+        await db.alog(m.from_user.id, f"снял подписки → {uid}")
+        return await m.answer(f"🗑 Подписки {uid} сняты")
+    items = subtools.parse_grants(a)
+    if not items:
+        return await m.answer(usage)
+    await db.grant_many(uid, items)
+    await db.alog(m.from_user.id, f"выдал {subtools.fmt_items(items)} → {uid}")
+    now = await subtools.describe(uid)
+    await m.answer(f"✅ {uid}: выдано {subtools.fmt_items(items)}\nСейчас: {now}")
     try:
-        await bot.send_message(uid, f"🎁 Вам выдан тариф <b>{TIERS[res]}</b> на {days} дн.")
+        await bot.send_message(uid, f"🎁 Вам выданы подписки: {subtools.fmt_items(items)}\n{now}")
     except Exception:
         pass
 
@@ -342,21 +373,26 @@ async def give(m: Message, bot: Bot):
 async def revoke(m: Message):
     if not _admin(m):
         return
-    uid, _ = _target(m, (m.text or "").split()[1:])
-    if uid is None:
-        return await m.answer("Формат: <code>/revoke user_id</code> или ответом на пересланное сообщение")
-    await db.revoke(uid)
-    await db.alog(m.from_user.id, f"снял подписку → {uid}")
-    await m.answer("✅ Подписка снята")
+    uid, a = _target(m, (m.text or "").split()[1:])
+    tier = subtools.revoke_tier(a[0] if a else "")
+    if uid is None or tier is False:
+        return await m.answer("Формат: <code>/revoke ID [premium|vip]</code> — без тарифа снимает всё")
+    await db.revoke(uid, tier)
+    await db.alog(m.from_user.id, f"снял {subtools.NAME.get(tier, 'все подписки')} → {uid}")
+    await m.answer(f"✅ {uid}: снято {subtools.NAME.get(tier, 'всё')}. Осталось: {await subtools.describe(uid)}")
 
 
 async def _subs_text() -> str:
-    rows = await db.fetchall("SELECT * FROM subs WHERE until > ? ORDER BY until DESC", (time.time(),))
+    rows = await subtools_overview()
     if not rows:
         return "Активных подписок нет"
     return "<b>Подписки</b>\n" + "\n".join(
-        f"<code>{r['user_id']}</code> — {TIERS[r['tier']]} до {datetime.fromtimestamp(r['until'], config.MSK):%d.%m.%Y}" for r in rows[:50]
-    )
+        f"<code>{uid}</code> — " + " · ".join(f"{subtools.NAME[t]} до {datetime.fromtimestamp(u, config.MSK):%d.%m}" for t, u in sorted(tiers.items()))
+        for uid, tiers in rows[:50])
+
+
+async def subtools_overview():
+    return await db.subs_overview()
 
 
 async def _stats_text() -> str:
@@ -366,7 +402,7 @@ async def _stats_text() -> str:
     users = (await one("SELECT COUNT(DISTINCT user_id) c FROM connections"))["c"]
     started = (await one("SELECT COUNT(*) c FROM settings WHERE key='started'"))["c"]
     active = (await one("SELECT COUNT(*) c FROM settings WHERE key='last_seen' AND CAST(value AS REAL) > ?", (now - 86400,)))["c"]
-    by = {r["tier"]: r["c"] for r in await db.fetchall("SELECT tier, COUNT(*) c FROM subs WHERE until > ? GROUP BY tier", (now,))}
+    by = {r["tier"]: r["c"] for r in await db.fetchall("SELECT tier, COUNT(*) c FROM subscriptions WHERE until > ? GROUP BY tier", (now,))}
     top = await db.fetchall("SELECT cmd, n FROM cmdstat WHERE day=? ORDER BY n DESC LIMIT 5", (day,))
     total = (await one("SELECT COALESCE(SUM(n),0) c FROM cmdstat WHERE day=?", (day,)))["c"]
     lines = [

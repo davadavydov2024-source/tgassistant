@@ -9,7 +9,7 @@ from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
 
 from . import config, db, errlog, registry
 from .ctx import Ctx
-from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra, more, tools, life  # noqa: F401  (регистрация команд)
+from .cmds import info, fun, anim, media, games, series, moderation, profile, admin, utils, saver, extra, more, tools, life, misc  # noqa: F401  (регистрация команд)
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -32,7 +32,7 @@ async def on_connection(bc: BusinessConnection, bot: Bot):
     if not bc.is_enabled:
         return
     trial = ""
-    if first and config.TRIAL_DAYS > 0 and not db.is_staff(u.id) and not await db.get_sub(u.id):
+    if first and config.TRIAL_DAYS > 0 and not db.is_staff(u.id) and not await db.get_subs(u.id):
         await db.grant(u.id, 1, config.TRIAL_DAYS)
         trial = f"\n🎁 Вам подарено <b>{config.TRIAL_DAYS} дн. PREMIUM</b> на пробу."
     inviter = await db.get_s(u.id, "ref") if first else None

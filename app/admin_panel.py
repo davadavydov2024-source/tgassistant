@@ -14,7 +14,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from . import config, db
+from . import config, db, subtools
 from .cmds import anim
 from .menu import _admin, _staff, _target, _subs_text, _stats_text, _spam_text
 from .registry import REG, TIERS
@@ -22,9 +22,9 @@ from .registry import REG, TIERS
 log = logging.getLogger(__name__)
 router = Router()
 PENDING: dict[int, str] = {}
-TIER_MAP = {"1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "combo": 2, "bundle": 2, "all": 2}
-PRICE_MAP = {"1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "3": 3, "combo": 3, "bundle": 3, "all": 3}
-NAMES = {1: "PREMIUM", 2: "VIP", 3: "КОМБО PREMIUM+VIP"}
+PROMO_MAP = {"1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "3": 3, "combo": 3, "both": 3, "bundle": 3, "all": 3}
+PRICE_MAP = {"1": 1, "premium": 1, "prem": 1, "2": 2, "vip": 2, "3": 3, "combo": 3, "both": 3, "bundle": 3, "all": 3}
+NAMES = {1: "PREMIUM", 2: "VIP", 3: "КОМБО (PREMIUM+VIP)"}
 PAGE = 15
 FILTERS = {"all": "Все", "paid": "💎 Платные", "banned": "🚫 Баны", "mods": "🛡 Мини"}
 LAST_FILTER: dict[int, str] = {}
@@ -42,9 +42,10 @@ ADMIN_HELP = (
     "👑 <b>Все команды админа</b>\n\n"
     "<b>Пользователи</b>: /users · <code>/find @ник|имя|ID</code> · <code>/user ID</code> · /top · "
     "<code>/ban ID [причина]</code> · <code>/unban ID</code> · /bans · <code>/msg ID текст</code>\n"
-    "<b>Подписки</b>: <code>/give ID premium|vip|combo [дней]</code> · <code>/revoke ID</code> · /subs\n"
-    "В чате с человеком: <code>.premium 30</code> · <code>.vip 30</code> · <code>.combo 30</code> · <code>.revoke</code>\n"
-    "<b>Промокоды</b>: <code>/newpromo КОД premium|vip ДНЕЙ ЛИМИТ</code> · /promos · <code>/delpromo КОД</code>\n"
+    "<b>Подписки</b> (PREMIUM и VIP независимы, можно обе сразу): <code>/give ID premium|vip|both [дней]</code> · "
+    "<code>/give ID premium 30 vip 60</code> · <code>/revoke ID [premium|vip]</code> · /subs · <code>/expiring [дней]</code> · <code>/giftall both 7</code>\n"
+    "В чате с человеком: <code>.premium 30</code> · <code>.vip 30</code> · <code>.both 30</code> · <code>.give premium 30 vip 60</code> · <code>.revoke</code>\n"
+    "<b>Промокоды</b>: <code>/newpromo КОД premium|vip|both ДНЕЙ ЛИМИТ</code> · /promos · <code>/delpromo КОД</code>\n"
     "<b>Команды</b>: <code>/disablecmd имя</code> · <code>/enablecmd имя</code> · /disabled · "
     "<code>/blockcmd ID имя</code> · <code>/unblockcmd ID имя</code>\n"
     "<b>Спам</b>: /spammers · <code>/stopspam ID|all</code>\n"
@@ -101,7 +102,7 @@ async def _dash_text() -> str:
     now = time.time()
     users = (await db.fetchone("SELECT COUNT(DISTINCT user_id) c FROM connections"))["c"]
     active = (await db.fetchone("SELECT COUNT(*) c FROM settings WHERE key='last_seen' AND CAST(value AS REAL) > ?", (now - 86400,)))["c"]
-    by = {r["tier"]: r["c"] for r in await db.fetchall("SELECT tier, COUNT(*) c FROM subs WHERE until > ? GROUP BY tier", (now,))}
+    by = {r["tier"]: r["c"] for r in await db.fetchall("SELECT tier, COUNT(*) c FROM subscriptions WHERE until > ? GROUP BY tier", (now,))}
     return (
         f"👑 <b>Админ-панель</b> · <code>{config.VERSION}</code>\n\n"
         f"👥 Пользователей: <b>{users}</b> · активных за 24 ч: <b>{active}</b>\n"
@@ -194,7 +195,7 @@ async def _card_text(uid: int) -> str:
     row = await db.fetchone("SELECT MAX(first_name) f, MAX(last_name) l, MAX(username) u FROM connections WHERE user_id=?", (uid,))
     name = html.escape(f"{row['f'] or ''} {row['l'] or ''}".strip() or "—")
     un = f"@{html.escape(row['u'])}" if row["u"] else "без username"
-    t, sub = await db.get_tier(uid), await db.get_sub(uid)
+    act = await db.active_subs(uid)
     conns = (await db.fetchone("SELECT COUNT(*) c FROM connections WHERE user_id=?", (uid,)))["c"]
     msgs = (await db.fetchone("SELECT COUNT(*) c FROM msgs m JOIN connections c ON c.conn_id=m.conn_id WHERE c.user_id=?", (uid,)))["c"]
     refs = (await db.fetchone("SELECT COUNT(*) c FROM settings WHERE key='ref' AND value=?", (str(uid),)))["c"]
@@ -203,8 +204,8 @@ async def _card_text(uid: int) -> str:
     blocked = json.loads(await db.get_s(uid, "blocked_cmds", "[]"))
     spam_wait = float(await db.get_s(uid, "spam_next", "0")) - time.time()
     return (
-        f"👤 <b>{name}</b> ({un})\nID: <code>{uid}</code> {' '.join(flags)}\nТариф: {TIERS[t]}"
-        + (f" до {_fmt(sub['until'])}" if sub and sub["until"] > time.time() else "")
+        f"👤 <b>{name}</b> ({un})\nID: <code>{uid}</code> {' '.join(flags)}\nПодписки: "
+        + (" · ".join(f"{subtools.NAME[t]} до {_fmt(u)}" for t, u in sorted(act.items())) or "нет (FREE)")
         + f"\nПодключений: {conns} · сообщений в журнале: {msgs}\nПриглашено друзей: {refs}\n"
         f"Последняя команда: {_fmt(seen) if seen else '—'}\n"
         f"Спам: {'🔇 отключён' if 'spam' in blocked else '✅ доступен'}"
@@ -223,8 +224,8 @@ def _card_kb(uid: int, admin: bool, admin_id: int) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(inline_keyboard=[[b("🎁 PREMIUM 7д", "prem7"), b("🎁 PREMIUM 30д", "prem30")],
                                                  [b("👑 VIP 30д", "vip30"), b("👑 VIP 90д", "vip90")],
-                                                 [b("🔥 КОМБО PREMIUM+VIP 30д", "combo30")],
-                                                 [b("🗑 Отобрать подписку", "rev")], back])
+                                                 [b("🔥 ОБЕ сразу 30д", "both30"), b("🔥 ОБЕ сразу 90д", "both90")],
+                                                 [b("🗑 PREMIUM", "rev1"), b("🗑 VIP", "rev2"), b("🗑 Всё", "rev")], back])
 
 
 async def _card_markup(uid: int, admin: bool, admin_id: int) -> InlineKeyboardMarkup:
@@ -296,7 +297,8 @@ async def user_card(m: Message):
     await m.answer(await _card_text(uid), reply_markup=await _card_markup(uid, _admin(m), m.from_user.id))
 
 
-GRANTS = {"prem": (1, None), "vip": (2, None), "prem7": (1, 7), "prem30": (1, 30), "vip30": (2, 30), "vip90": (2, 90), "combo30": (2, 30)}
+GRANTS = {"prem": [(1, None)], "vip": [(2, None)], "prem7": [(1, 7)], "prem30": [(1, 30)], "vip30": [(2, 30)], "vip90": [(2, 90)],
+          "both30": [(1, 30), (2, 30)], "both90": [(1, 90), (2, 90)], "combo30": [(1, 30), (2, 30)]}
 
 
 @router.callback_query(F.data.startswith("u:"))
@@ -328,14 +330,14 @@ async def user_cb(cb: CallbackQuery, bot: Bot):
             await db.alog(me, f"разбан → {uid}")
             note = "✅ Вы разблокированы."
         elif act in GRANTS:
-            tier, days = GRANTS[act]
-            days = days or config.SUB_DAYS
-            res = await db.apply_sub(uid, tier, days)
-            await db.alog(me, f"выдал {TIERS[tier]} {days}д → {uid} (итог {TIERS[res]})")
-            note = f"🎁 Вам выдан тариф <b>{TIERS[res]}</b> на {days} дн."
-        elif act == "rev":
-            await db.revoke(uid)
-            await db.alog(me, f"отобрал подписку → {uid}")
+            items = [(t, d or config.SUB_DAYS) for t, d in GRANTS[act]]
+            await db.grant_many(uid, items)
+            await db.alog(me, f"выдал {subtools.fmt_items(items)} → {uid}")
+            note = f"🎁 Вам выданы подписки: {subtools.fmt_items(items)}\n{await subtools.describe(uid)}"
+        elif act in ("rev", "rev1", "rev2"):
+            tier = {"rev1": 1, "rev2": 2}.get(act)
+            await db.revoke(uid, tier)
+            await db.alog(me, f"отобрал {subtools.NAME.get(tier, 'все подписки')} → {uid}")
         elif act == "mod":
             await db.add_mod(uid)
             await db.alog(me, f"мини-админ → {uid}")
@@ -388,8 +390,8 @@ async def _bans_text() -> str:
 
 async def _promos_text() -> str:
     rows = await db.fetchall("SELECT * FROM promos ORDER BY code")
-    body = "\n".join(f"<code>{r['code']}</code> · {TIERS[r['tier']]} {r['days']} дн. · осталось {r['uses_left']}" for r in rows) or "пока нет"
-    return ("🎟 <b>Промокоды</b>\n" + body + "\n\nСоздать: <code>/newpromo КОД premium 30 10</code>\nУдалить: <code>/delpromo КОД</code>\n"
+    body = "\n".join(f"<code>{r['code']}</code> · {NAMES[r['tier']]} {r['days']} дн. · осталось {r['uses_left']}" for r in rows) or "пока нет"
+    return ("🎟 <b>Промокоды</b>\n" + body + "\n\nСоздать: <code>/newpromo КОД both 30 10</code> (premium | vip | both)\nУдалить: <code>/delpromo КОД</code>\n"
             "Пользователи активируют: <code>/promo КОД</code>")
 
 
@@ -436,9 +438,10 @@ async def _pays_text() -> str:
     names = {"1": "PREMIUM", "2": "VIP", "3": "КОМБО"}
     lines = [f"💳 <b>Платежи</b> · всего получено: <b>{total}⭐</b>"]
     for r in rows:
-        kind = r["payload"].split(":")[1]
+        parts = r["payload"].split(":")
+        gift = "🎁 " if parts[0] == "gift" else ""
         mark = " ↩️ возврат" if r["payload"].endswith(":refunded") else ""
-        lines.append(f"{_fmt(r['ts'])} · <code>{r['user_id']}</code> · {names.get(kind, kind)} · {r['stars']}⭐{mark}\n<code>{r['charge_id']}</code>")
+        lines.append(f"{_fmt(r['ts'])} · <code>{r['user_id']}</code> · {gift}{names.get(parts[1], parts[1])} · {r['stars']}⭐{mark}\n<code>{r['charge_id']}</code>")
     return "\n".join(lines) + "\n\nВернуть звёзды и снять подписку: <code>/refund ID_платежа</code>"
 
 
@@ -446,13 +449,13 @@ async def _export(msg: Message):
     rows = await db.fetchall("SELECT user_id, first_name, last_name, MAX(username) username, MAX(ts) ts FROM connections GROUP BY user_id")
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["user_id", "username", "name", "tier", "sub_until", "banned", "mod", "last_seen"])
+    w.writerow(["user_id", "username", "name", "premium_until", "vip_until", "banned", "mod", "last_seen"])
     for r in rows:
         uid = r["user_id"]
-        sub = await db.get_sub(uid)
+        act = await db.active_subs(uid)
         seen = await db.get_s(uid, "last_seen")
-        w.writerow([uid, r["username"] or "", f"{r['first_name']} {r['last_name']}".strip(), TIERS[await db.get_tier(uid)],
-                    _fmt(sub["until"]) if sub else "", int(uid in db.BANNED), int(uid in db.MODS), _fmt(seen) if seen else ""])
+        w.writerow([uid, r["username"] or "", f"{r['first_name']} {r['last_name']}".strip(),
+                    _fmt(act[1]) if 1 in act else "", _fmt(act[2]) if 2 in act else "", int(uid in db.BANNED), int(uid in db.MODS), _fmt(seen) if seen else ""])
     await msg.answer_document(BufferedInputFile(buf.getvalue().encode("utf-8-sig"), "users.csv"), caption=f"👥 Пользователей: {len(rows)}")
 
 
@@ -646,13 +649,13 @@ async def newpromo(m: Message):
     if not _admin(m):
         return
     a = _args(m)
-    if len(a) < 4 or a[1].lower() not in TIER_MAP or not a[2].isdigit() or not a[3].isdigit():
-        return await m.answer("Формат: <code>/newpromo КОД premium|vip ДНЕЙ ЛИМИТ</code>")
+    if len(a) < 4 or a[1].lower() not in PROMO_MAP or not a[2].isdigit() or not a[3].isdigit():
+        return await m.answer("Формат: <code>/newpromo КОД premium|vip|both ДНЕЙ ЛИМИТ</code> (both — обе подписки сразу)")
     code = a[0].upper()
-    await db.execute("INSERT OR REPLACE INTO promos VALUES(?,?,?,?)", (code, TIER_MAP[a[1].lower()], int(a[2]), int(a[3])))
+    await db.execute("INSERT OR REPLACE INTO promos VALUES(?,?,?,?)", (code, PROMO_MAP[a[1].lower()], int(a[2]), int(a[3])))
     await db.execute("DELETE FROM promo_used WHERE code=?", (code,))
     await db.alog(m.from_user.id, f"промокод {code}: {a[1]} {a[2]}д ×{a[3]}")
-    await m.answer(f"🎟 Промокод <code>{code}</code>: {TIERS[TIER_MAP[a[1].lower()]]} на {a[2]} дн., активаций {a[3]}\nПользователи вводят: <code>/promo {code}</code>")
+    await m.answer(f"🎟 Промокод <code>{code}</code>: {NAMES[PROMO_MAP[a[1].lower()]]} на {a[2]} дн., активаций {a[3]}\nПользователи вводят: <code>/promo {code}</code>")
 
 
 @router.message(Command("promos"))
@@ -731,13 +734,75 @@ async def refund(m: Message, command: CommandObject, bot: Bot):
     except Exception as e:
         return await m.answer(f"⚠️ Возврат не удался: {html.escape(str(e))}")
     await db.execute("UPDATE payments SET payload = payload || ':refunded' WHERE charge_id=?", (charge,))
-    await db.revoke(row["user_id"])
-    await db.alog(m.from_user.id, f"возврат {row['stars']}⭐ → {row['user_id']}, подписка снята")
-    await m.answer(f"↩️ Возвращено {row['stars']}⭐, подписка пользователя {row['user_id']} снята")
+    parts = row["payload"].split(":")
+    kind, days, note = int(parts[1]), row["days"] or config.SUB_DAYS, ""
+    if parts[0] == "gift":
+        code = parts[2] if len(parts) > 2 else None
+        if code:
+            used = await db.fetchone("SELECT 1 FROM promo_used WHERE code=?", (code,))
+            await db.execute("DELETE FROM promos WHERE code=?", (code,))
+            note = "код подарка удалён" if not used else "код уже активирован — у друга подписка сохранена"
+    else:
+        for t in ((1, 2) if kind == 3 else (kind,)):
+            await db.take_days(row["user_id"], t, days)
+        note = f"сняты {days} дн. подписки"
+    await db.alog(m.from_user.id, f"возврат {row['stars']}⭐ → {row['user_id']}: {note}")
+    await m.answer(f"↩️ Возвращено {row['stars']}⭐ пользователю {row['user_id']}: {note}")
     try:
-        await bot.send_message(row["user_id"], f"↩️ Платёж возвращён ({row['stars']}⭐), подписка отключена.")
+        await bot.send_message(row["user_id"], f"↩️ Платёж возвращён ({row['stars']}⭐)." + ("" if parts[0] == "gift" else " Оплаченные дни подписки сняты."))
     except Exception:
         pass
+
+
+# ---------- массовая выдача и скоро истекающие ----------
+GIFT_PENDING: dict = {}
+
+
+@router.message(Command("giftall"))
+async def giftall(m: Message):
+    if not _admin(m):
+        return
+    items = subtools.parse_grants(_args(m))
+    if not items:
+        return await m.answer("Формат: <code>/giftall both 7</code> или <code>/giftall premium 3 vip 1</code> — подарить ВСЕМ пользователям")
+    GIFT_PENDING[m.from_user.id] = items
+    kb = InlineKeyboardMarkup(inline_keyboard=[[_b(f"✅ Выдать ({len(await _recipients())})", "ga:ok"), _b("✖ Отмена", "ga:no")]])
+    await m.answer(f"🎁 Выдать <b>{subtools.fmt_items(items)}</b> всем пользователям бота?", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("ga:"))
+async def giftall_cb(cb: CallbackQuery, bot: Bot):
+    if cb.from_user.id != config.ADMIN_ID:
+        return await cb.answer("Только для главного админа", show_alert=True)
+    items = GIFT_PENDING.pop(cb.from_user.id, None)
+    await cb.message.edit_reply_markup(reply_markup=None)
+    if cb.data == "ga:no" or not items:
+        return await cb.answer("Отменено")
+    await cb.answer("Выдаю…")
+    sent = 0
+    for uid in await _recipients():
+        await db.grant_many(uid, items)
+        try:
+            await bot.send_message(uid, f"🎁 Вам подарок от администратора: {subtools.fmt_items(items)}\n{await subtools.describe(uid)}")
+            sent += 1
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+    await db.alog(cb.from_user.id, f"выдал всем {subtools.fmt_items(items)}; уведомлено {sent}")
+    await cb.message.answer(f"🎁 Готово: {subtools.fmt_items(items)} выданы всем, уведомлено {sent}")
+
+
+@router.message(Command("expiring"))
+async def expiring(m: Message, command: CommandObject):
+    if not _staff(m):
+        return
+    d = int(command.args) if (command.args or "").strip().isdigit() else 3
+    now = time.time()
+    rows = await db.fetchall("SELECT * FROM subscriptions WHERE until > ? AND until <= ? ORDER BY until", (now, now + d * 86400))
+    if not rows:
+        return await m.answer(f"Ближайшие {d} дн. ничего не истекает")
+    await m.answer(f"⏳ <b>Истекает в ближайшие {d} дн.</b>\n" + "\n".join(
+        f"<code>{r['user_id']}</code> · {subtools.NAME[r['tier']]} · {_fmt(r['until'])}" for r in rows[:50]))
 
 
 @router.message(Command("log"))
