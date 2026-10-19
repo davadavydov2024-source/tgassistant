@@ -51,7 +51,7 @@ ADMIN_HELP = (
     "<b>Спам</b>: /spammers · <code>/stopspam ID|all</code>\n"
     "<b>Мини-админы</b>: <code>/addmod ID</code> · <code>/delmod ID</code> · /mods\n"
     "<b>Прочее</b>: <code>/broadcast текст</code> · <code>/maintenance on|off</code> · "
-    "<code>/setprice premium|vip|combo звёзды</code> · <code>/set имя значение</code> · /payments · <code>/refund ID</code> · /export · /backup · /log · /stats · /musictest"
+    "<code>/setprice premium|vip|combo звёзды</code> · <code>/set имя значение</code> · /payments · <code>/refund ID</code> · /export · /backup · /log · /stats · /musictest · <code>/stars [резерв]</code> (звёзды бота → подарок вам)"
 )
 STAFF_HELP = (
     "🛡 <b>Мини-админка</b>\n\n"
@@ -122,7 +122,7 @@ def _panel_kb(admin: bool) -> InlineKeyboardMarkup:
                  [_ab("💰 Цены", "prices"), _ab("🔧 Команды", "cmds")],
                  [_ab("🛠 Техработы: ВКЛ" if db.STATE["maint"] else "🛠 Техработы: выкл", "maint"), _ab("📤 Экспорт", "export")],
                  [_ab("💾 Бэкап БД", "backup"), _ab("📜 Лог", "log")],
-                 [_ab("💳 Платежи", "pays")]]
+                 [_ab("💳 Платежи", "pays"), _ab("⭐ Звёзды → подарок", "stars")]]
     rows.append([_ab("🔄 Обновить", "panel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -471,11 +471,11 @@ async def _backup(msg: Message):
 
 
 # ---------- кнопки панели ----------
-ADMIN_ONLY = {"bans", "promos", "bc", "cmds", "maint", "prices", "export", "backup", "log", "settings", "pays"}
+ADMIN_ONLY = {"bans", "promos", "bc", "cmds", "maint", "prices", "export", "backup", "log", "settings", "pays", "stars"}
 
 
 @router.callback_query(F.data.startswith("adm:"))
-async def admin_cb(cb: CallbackQuery):
+async def admin_cb(cb: CallbackQuery, bot: Bot):
     key, uid = cb.data[4:], cb.from_user.id
     if not db.is_staff(uid):
         return await cb.answer("Только для админов", show_alert=True)
@@ -490,6 +490,14 @@ async def admin_cb(cb: CallbackQuery):
         return await cb.answer()
     if key == "users":
         text, kb = await _users_page(uid, "all")
+        await _edit(cb, text, kb)
+        return await cb.answer()
+    if key == "stars":
+        from .stars import view
+        try:
+            text, kb = await view(bot)
+        except Exception as e:
+            return await cb.answer(f"Не удалось получить баланс: {type(e).__name__}", show_alert=True)
         await _edit(cb, text, kb)
         return await cb.answer()
     if key == "export":
