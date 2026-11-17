@@ -7,9 +7,9 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
+from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent, MenuButtonWebApp, WebAppInfo
 
-from app import config, db, menu, business, admin_panel, botcmds, errlog, music_inline, stars
+from app import config, db, menu, business, admin_panel, botcmds, errlog, music_inline, stars, webapp
 from app.cmds import profile, utils
 
 
@@ -38,6 +38,12 @@ async def main():
     asyncio.create_task(utils.remind_loop(bot))
     asyncio.create_task(botcmds.sub_loop(bot))
     me = await bot.me()
+    if config.WEBAPP_URL:
+        try:
+            await webapp.start(bot)
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Открыть", web_app=WebAppInfo(url=webapp.url())))
+        except Exception as e:  # мини-приложение не должно ронять самого бота
+            logging.warning("мини-приложение не запустилось: %s", e)
     user_cmds = [
         BotCommand(command="start", description="Главное меню"),
         BotCommand(command="connect", description="Как подключить бота"),

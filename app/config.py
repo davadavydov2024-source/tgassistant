@@ -39,10 +39,14 @@ TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "3"))  # пробный PREMIUM при 
 PREMIUM_STARS = int(os.getenv("PREMIUM_STARS", "150"))
 VIP_STARS = int(os.getenv("VIP_STARS", "350"))
 SUB_DAYS = int(os.getenv("SUB_DAYS", "30"))
-VERSION = "2026.10.04-14"  # меняйте при обновлениях: /version покажет, какая версия реально запущена
+VERSION = "2026.11.17-15"  # меняйте при обновлениях: /version покажет, какая версия реально запущена
 BUNDLE_STARS = int(os.getenv("BUNDLE_STARS", "10"))  # комбо PREMIUM+VIP
 PRICES = {1: PREMIUM_STARS, 2: VIP_STARS, 3: BUNDLE_STARS}  # цены в звёздах (меняются командой /setprice)
 REF_DAYS = int(os.getenv("REF_DAYS", "3"))  # бонус пригласившему за друга
 SPAM_MAX = int(os.getenv("SPAM_MAX", "10000"))
 SPAM_COOLDOWN = int(os.getenv("SPAM_COOLDOWN", str(20 * 60)))  # секунды
 MSK = timezone(timedelta(hours=3))
+# мини-приложение (Telegram Web App): нужен публичный HTTPS-адрес, например https://bot.example.com
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip().rstrip("/")
+WEB_PORT = int(os.getenv("PORT") or os.getenv("WEB_PORT") or "8080")
+WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0")

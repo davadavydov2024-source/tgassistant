@@ -11,7 +11,7 @@ from aiogram.types import (
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery,
 )
 
-from . import config, db, subtools
+from . import config, db, subtools, webapp
 from .registry import CMDS, SECTIONS, TIERS, section_text
 from .cmds import anim, saver
 
@@ -77,8 +77,12 @@ def home_kb(uid) -> InlineKeyboardMarkup:
         [_btn("🎟 Промокод", "m:promo"), _btn("👥 Друзья", "m:ref")],
         [_btn("🩺 Диагностика", "m:diag"), _btn("ℹ️ О боте", "m:about")],
     ]
+    if config.WEBAPP_URL:
+        rows.insert(0, [webapp.button("📱 Открыть мини-приложение")])
     if db.is_staff(uid):
         rows.append([_btn("👑 Админка" if uid == config.ADMIN_ID else "🛡 Мини-админка", "adm:panel")])
+        if config.WEBAPP_URL:
+            rows.append([webapp.button("🖥 Веб-админка", "admin")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -166,7 +170,7 @@ async def page(key: str, uid: int, bot):
     if key in SECTIONS and key in _visible():
         return section_text(key), section_kb(key)
     if key == "connect":
-        return connect_text((await bot.me()).username), back_kb([_btn("🩺 Проверить подключение", "m:diag")])
+        return connect_text((await bot.me()).username), back_kb(*([[webapp.button("📱 Подключить по шагам", "connect")]] if config.WEBAPP_URL else []), [_btn("🩺 Проверить подключение", "m:diag")])
     if key == "sub":
         return await sub_text(uid), sub_kb()
     if key == "gift":
